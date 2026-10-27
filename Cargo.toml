@@ -7,6 +7,12 @@ edition = "2024"
 # GUI.
 iced = { version = "0.14", features = ["tokio"] }
 
+# Extensions for futures.
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+
+# WebRtcSocket.
+matchbox_socket = "0.14"
+
 # Logging.
 log = { version = "0.4", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
