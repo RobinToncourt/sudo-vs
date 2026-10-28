@@ -1,5 +1,7 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 pub enum Player {
     Player1,
     Player2,
@@ -16,7 +18,7 @@ impl Player {
 
 pub struct InvalidNumberConversion;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Number {
     One,
     Two,
