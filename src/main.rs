@@ -504,31 +504,13 @@ fn player_to_name(player: &Player) -> &'static str {
 fn view_grid(app: &App) -> Element<'_, Message> {
     let grid = app.game().grid();
 
-    let mut rows = Vec::with_capacity(grid.len());
-    for (x, outer) in grid.iter().enumerate() {
-        let mut row: Row<'_, Message> = Row::new();
-        for (y, inner) in outer.iter().enumerate() {
-            if let Some(number) = inner {
-                let t = text(number.to_string())
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .size(30.0)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center);
-                row = row.push(t);
-            } else {
-                let b = button("")
-                    .on_press(Message::SudokuButtonClicked(x, y))
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .style(style_button);
-                row = row.push(b);
-            }
-        }
-        rows.push(row.spacing(1).into());
-    }
-
-    Column::from_iter(rows).spacing(1).into()
+    Column::with_children((0..3).map(|square_y| {
+        Row::with_children((0..3).map(|square_x| view_square(grid, square_x, square_y)))
+            .spacing(SQUARE_SPACING)
+            .into()
+    }))
+    .spacing(SQUARE_SPACING)
+    .into()
 }
 
 fn view_square(
