@@ -1,4 +1,4 @@
-#![allow(dead_code, unused)]
+#![allow(dead_code)]
 
 mod game;
 mod proto;
@@ -51,23 +51,23 @@ enum App {
         lobby_name: String,
         game: Game,
         selected_number: Option<Number>,
-        // sender: mpsc::Sender<Command>,
+        sender: mpsc::Sender<Command>,
     },
 }
 impl Default for App {
     fn default() -> Self {
-        // Self::SelectingLobby {
-        //     info: String::new(),
-        //     nickname: String::from("Bob"),
-        //     lobby_name: String::from("test"),
-        // }
-        Self::Game {
-            nickname: String::new(),
-            opponent_nickname: String::new(),
+        Self::SelectingLobby {
+            info: String::new(),
+            nickname: String::from("Bob"),
             lobby_name: String::from("test"),
-            game: Game::new(),
-            selected_number: Some(Number::One),
         }
+        // Self::Game {
+        //     nickname: String::new(),
+        //     opponent_nickname: String::new(),
+        //     lobby_name: String::from("test"),
+        //     game: Game::new(),
+        //     selected_number: Some(Number::One),
+        // }
     }
 }
 impl fmt::Display for App {
@@ -139,15 +139,15 @@ impl App {
             | App::Game { lobby_name, .. } => lobby_name,
         }
     }
-    // fn get_sender(&mut self) -> &mut mpsc::Sender<Command> {
-    //     match self {
-    //         App::SelectingLobby { .. } => {
-    //             panic!("Wrong state, expected [Connecting/Game] got [{self}]")
-    //         }
-    //         App::Connecting { sender, .. } => sender.as_mut().unwrap(),
-    //         App::Game { sender, .. } => sender,
-    //     }
-    // }
+    fn get_sender(&mut self) -> &mut mpsc::Sender<Command> {
+        match self {
+            App::SelectingLobby { .. } => {
+                panic!("Wrong state, expected [Connecting/Game] got [{self}]")
+            }
+            App::Connecting { sender, .. } => sender.as_mut().unwrap(),
+            App::Game { sender, .. } => sender,
+        }
+    }
     fn set_sender(&mut self, sender: mpsc::Sender<Command>) {
         if let Self::Connecting {
             sender: opt_sender, ..
@@ -210,27 +210,27 @@ impl App {
         };
     }
     /// Change state from `Connecting` to `Game`.
-    // fn transition_to_game(&mut self) {
-    //     let Self::Connecting {
-    //         nickname,
-    //         opponent_nickname,
-    //         lobby_name,
-    //         sender,
-    //     } = self
-    //     else {
-    //         panic!("Wrong state, expected [Connecting] got [{self}]");
-    //     };
-    //     *self = Self::Game {
-    //         nickname: nickname.clone(),
-    //         opponent_nickname: opponent_nickname
-    //             .clone()
-    //             .expect("opponent nickname should be set"),
-    //         lobby_name: lobby_name.clone(),
-    //         game: Game::new(),
-    //         selected_number: None,
-    //         sender: sender.take().expect("the sender should be set"),
-    //     }
-    // }
+    fn transition_to_game(&mut self) {
+        let Self::Connecting {
+            nickname,
+            opponent_nickname,
+            lobby_name,
+            sender,
+        } = self
+        else {
+            panic!("Wrong state, expected [Connecting] got [{self}]");
+        };
+        *self = Self::Game {
+            nickname: nickname.clone(),
+            opponent_nickname: opponent_nickname
+                .clone()
+                .expect("opponent nickname should be set"),
+            lobby_name: lobby_name.clone(),
+            game: Game::new(),
+            selected_number: None,
+            sender: sender.take().expect("the sender should be set"),
+        }
+    }
     /// Change other states to `SelectingLobby`.
     fn transition_to_selecting_lobby(&mut self, info: String) {
         let (nickname, lobby_name) = match self {
@@ -316,7 +316,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 debug!("Peer connected: {peer}");
                 let action = PlayerAction::Nickname(app.nickname().clone());
                 let bytes = postcard::to_allocvec(&action).unwrap();
-                // app.get_sender().send(Command::Send(peer, bytes));
+                if let Err(e) = app.get_sender().try_send(Command::Send(peer, bytes)) {
+                    debug!("Failed to queue nickname: {e}");
+                }
             }
             WebSocketEvent::PeerDisconnected(peer) => {
                 debug!("Peer disconnected: {peer}");
@@ -329,7 +331,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     PlayerAction::Nickname(opponent_nickname) => {
                         debug!("Nickname: {opponent_nickname}");
                         app.set_opponent_nickname(opponent_nickname);
-                        // app.transition_to_game();
+                        app.transition_to_game();
                     }
                     PlayerAction::NumberPlacement {
                         row,
@@ -345,7 +347,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             WebSocketEvent::Closed => {
                 debug!("Connection closed");
-                // app.transition_to_selecting_lobby("peer disconnected".to_string());
+                app.transition_to_selecting_lobby("peer disconnected".to_string());
             }
         },
         Message::InputNickname(nickname) => *app.nickname_mut() = nickname,
@@ -359,6 +361,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::RadioNumberSelected(number) => *app.selected_number_mut() = Some(number),
         Message::SudokuButtonClicked(row, column) => {
             if let Some(selected_number) = *app.selected_number() {
+                let player_action = PlayerAction::NumberPlacement {
+                    row,
+                    column,
+                    number: selected_number,
+                };
+                let bytes = postcard::to_allocvec(&player_action).unwrap();
+                if let Err(e) = app.get_sender().try_send(Command::Broadcast(bytes)) {
+                    debug!("Failed to queue move: {e}");
+                }
                 game_place_number(app, row, column, selected_number);
             } else {
                 debug!("No number selected");
@@ -373,6 +384,7 @@ fn game_place_number(app: &mut App, row: usize, column: usize, number: Number) {
     match outcome {
         NumberPlacingOutcome::Ok => debug!("Valid position"),
         NumberPlacingOutcome::CellNotEmpty => {
+            // Non-empty cell are not clickable, should not happen.
             debug!("Cell is not empty");
         }
         NumberPlacingOutcome::GameOver(reason) => match reason {
@@ -380,9 +392,9 @@ fn game_place_number(app: &mut App, row: usize, column: usize, number: Number) {
                 debug!("Draw");
                 app.transition_to_selecting_lobby("Draw".to_string());
             }
-            GameOutcome::NumberAlreadyInSquare => debug!("already in square"),
-            GameOutcome::NumberAlreadyInRow => debug!("already in row"),
-            GameOutcome::NumberAlreadyInColumn => debug!("already in column"),
+            GameOutcome::NumberAlreadyInSquare => debug!("already in square, player lost"),
+            GameOutcome::NumberAlreadyInRow => debug!("already in row, player lost"),
+            GameOutcome::NumberAlreadyInColumn => debug!("already in column, player lost"),
             GameOutcome::NoValidPositions => debug!("unsupported yet"),
         },
     }
@@ -392,8 +404,8 @@ fn subscription(app: &App) -> Subscription<Message> {
     match app {
         App::SelectingLobby { .. } => Subscription::none(),
         App::Connecting { lobby_name, .. } | App::Game { lobby_name, .. } => connect(format!(
-            "ws://localhost:3536/",
-            // app.lobby_name() {}/?players=2
+            "ws://localhost:3536/", // {}/?players=2
+                                    // app.lobby_name()
         ))
         .map(Message::WebSocketEvent),
     }
@@ -444,7 +456,7 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
                     }
                 }
             }
-            std::future::pending::<()>().await; // a finished subscription stream can cause trouble; park it
+            std::future::pending::<()>().await;
         })
     })
 }
@@ -495,6 +507,7 @@ fn player_turn(app: &App) -> Element<'_, Message> {
 }
 
 fn player_to_name(player: &Player) -> &'static str {
+    // TODO: use players' nicknames.
     match player {
         Player::Player1 => "Bob",
         Player::Player2 => "Patrick",
