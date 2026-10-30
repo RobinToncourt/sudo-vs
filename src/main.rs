@@ -1,7 +1,6 @@
-#![allow(dead_code)]
+#![deny(clippy::unwrap_used)]
 
 mod game;
-mod proto;
 
 use futures_timer::Delay;
 
@@ -12,7 +11,8 @@ use iced::{
     futures::{FutureExt, SinkExt, StreamExt, channel::mpsc, select},
     stream,
     widget::{
-        Column, Row, button, button::Style, column as col, container, radio, row, text, text_input,
+        Column, Row, button, button::Style, column as col, container, radio, row, space, text,
+        text_input,
     },
 };
 
@@ -28,235 +28,65 @@ const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
 const SQUARE_SPACING: f32 = 10.0;
 
-/*
- * `lobby_name` is required after the WebRtcSocket connected to keep Iced's Subscription running.
- */
-enum App {
+struct GameState {
+    is_playing_first: bool,
+    opponent_peer_id: PeerId,
+    opponent_nickname: String,
+    game: Game,
+    selected_number: Option<Number>,
+    sender: mpsc::Sender<Command>,
+}
+
+enum State {
     SelectingLobby {
         /// To show info to the user.
         info: String,
-        nickname: String,
-        lobby_name: String,
     },
     Connecting {
-        nickname: String,
-        opponent_nickname: Option<String>,
-        lobby_name: String,
+        opponent_peer_id: Option<PeerId>,
         /// To send command to the `WebRtcSocket` to execute, i.e. communicate online.
         sender: Option<mpsc::Sender<Command>>,
     },
-    Game {
-        nickname: String,
-        opponent_nickname: String,
-        lobby_name: String,
-        game: Game,
-        selected_number: Option<Number>,
-        sender: mpsc::Sender<Command>,
-    },
+    Game(GameState),
 }
-impl Default for App {
-    fn default() -> Self {
-        Self::SelectingLobby {
-            info: String::new(),
-            nickname: String::from("Bob"),
-            lobby_name: String::from("test"),
-        }
-        // Self::Game {
-        //     nickname: String::new(),
-        //     opponent_nickname: String::new(),
-        //     lobby_name: String::from("test"),
-        //     game: Game::new(),
-        //     selected_number: Some(Number::One),
-        // }
-    }
-}
-impl fmt::Display for App {
+impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                App::SelectingLobby { .. } => "SelectingLobby",
-                App::Connecting { .. } => "Connecting",
-                App::Game { .. } => "Game",
+                Self::SelectingLobby { .. } => "SelectingLobby",
+                Self::Connecting { .. } => "Connecting",
+                Self::Game { .. } => "Game",
             }
         )
     }
 }
-impl App {
-    /*
-     * Getters.
-     */
-    fn info(&self) -> &String {
-        let Self::SelectingLobby { info, .. } = self else {
-            panic!("Wrong state, expected [SelectingLobby] got [{self}]");
-        };
-        info
-    }
-    fn nickname(&self) -> &String {
-        match self {
-            App::SelectingLobby { nickname, .. }
-            | App::Connecting { nickname, .. }
-            | App::Game { nickname, .. } => nickname,
-        }
-    }
-    fn nickname_mut(&mut self) -> &mut String {
-        match self {
-            App::SelectingLobby { nickname, .. }
-            | App::Connecting { nickname, .. }
-            | App::Game { nickname, .. } => nickname,
-        }
-    }
-    fn get_opponent_nickname(&self) -> &String {
-        let Self::Game {
-            opponent_nickname, ..
-        } = self
-        else {
-            panic!("Wrong state, expected [Game] got [{self}]");
-        };
-        opponent_nickname
-    }
-    fn set_opponent_nickname(&mut self, op_nick: String) {
-        let Self::Connecting {
-            opponent_nickname, ..
-        } = self
-        else {
-            panic!("Wrong state, expected [Connecting] got [{self}]");
-        };
-        *opponent_nickname = Some(op_nick);
-    }
-    fn lobby_name(&self) -> &String {
-        match self {
-            App::SelectingLobby { lobby_name, .. }
-            | App::Connecting { lobby_name, .. }
-            | App::Game { lobby_name, .. } => lobby_name,
-        }
-    }
-    fn lobby_name_mut(&mut self) -> &mut String {
-        match self {
-            App::SelectingLobby { lobby_name, .. }
-            | App::Connecting { lobby_name, .. }
-            | App::Game { lobby_name, .. } => lobby_name,
-        }
-    }
-    fn get_sender(&mut self) -> &mut mpsc::Sender<Command> {
-        match self {
-            App::SelectingLobby { .. } => {
-                panic!("Wrong state, expected [Connecting/Game] got [{self}]")
-            }
-            App::Connecting { sender, .. } => sender.as_mut().unwrap(),
-            App::Game { sender, .. } => sender,
-        }
-    }
-    fn set_sender(&mut self, sender: mpsc::Sender<Command>) {
-        if let Self::Connecting {
-            sender: opt_sender, ..
-        } = self
-        {
-            *opt_sender = Some(sender);
-        }
-    }
-    #[allow(clippy::ref_option)]
-    fn selected_number(&self) -> &Option<Number> {
-        let Self::Game {
-            selected_number, ..
-        } = self
-        else {
-            panic!("Wrong state, expected [Game] got [{self}]");
-        };
-        selected_number
-    }
-    fn selected_number_mut(&mut self) -> &mut Option<Number> {
-        let Self::Game {
-            selected_number, ..
-        } = self
-        else {
-            panic!("Wrong state, expected [Game] got [{self}]");
-        };
-        selected_number
-    }
-    fn game(&self) -> &Game {
-        let Self::Game { game, .. } = self else {
-            panic!("Wrong state, expected [Game] got [{self}]");
-        };
-        game
-    }
-    fn game_mut(&mut self) -> &mut Game {
-        let Self::Game { game, .. } = self else {
-            panic!("Wrong state, expected [Game] got [{self}]");
-        };
-        game
-    }
 
-    /*
-     * State transition.
-     */
-    /// Change state from `SelectingLobby` to `Connecting`.
-    fn transition_to_connecting(&mut self) {
-        let Self::SelectingLobby {
-            nickname,
-            lobby_name,
-            ..
-        } = self
-        else {
-            panic!("Wrong state, expected [SelectingLobby] got [{self}]");
-        };
-
-        *self = Self::Connecting {
-            nickname: nickname.clone(),
-            opponent_nickname: None,
-            lobby_name: lobby_name.clone(),
-            sender: None,
-        };
-    }
-    /// Change state from `Connecting` to `Game`.
-    fn transition_to_game(&mut self) {
-        let Self::Connecting {
-            nickname,
-            opponent_nickname,
-            lobby_name,
-            sender,
-        } = self
-        else {
-            panic!("Wrong state, expected [Connecting] got [{self}]");
-        };
-        *self = Self::Game {
-            nickname: nickname.clone(),
-            opponent_nickname: opponent_nickname
-                .clone()
-                .expect("opponent nickname should be set"),
-            lobby_name: lobby_name.clone(),
-            game: Game::new(),
-            selected_number: None,
-            sender: sender.take().expect("the sender should be set"),
+struct App {
+    nickname: String,
+    lobby_name: String,
+    state: State,
+}
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            nickname: String::from("Bob"),
+            lobby_name: String::from("test"),
+            state: State::SelectingLobby {
+                info: String::new(),
+            },
         }
-    }
-    /// Change other states to `SelectingLobby`.
-    fn transition_to_selecting_lobby(&mut self, info: String) {
-        let (nickname, lobby_name) = match self {
-            App::SelectingLobby { .. } => panic!("Wrong state, expected not [SelectingLobby]."),
-            App::Connecting {
-                nickname,
-                lobby_name,
-                ..
-            }
-            | App::Game {
-                nickname,
-                lobby_name,
-                ..
-            } => (nickname, lobby_name),
-        };
-
-        *self = Self::SelectingLobby {
-            nickname: nickname.clone(),
-            lobby_name: lobby_name.clone(),
-            info,
-        }
-    }
-
-    fn can_join_lobby(&self) -> bool {
-        let is_all_alphanumeric = self.lobby_name().chars().all(char::is_alphanumeric);
-        !self.nickname().is_empty() && !self.lobby_name().is_empty() && is_all_alphanumeric
+        // Self {
+        //     nickname: String::from("Bob"),
+        //     lobby_name: String::from("test"),
+        //     state: State::Game(GameState {
+        //         opponent_nickname: String::from("Patrick"),
+        //         game: Game::new(),
+        //         selected_number: Some(Number::One),
+        //         sender: mpsc::channel(100).0,
+        //     }),
+        // }
     }
 }
 
@@ -267,8 +97,26 @@ enum Message {
     InputNickname(String),
     InputLobbyName(String),
     JoinLobby,
+    CancelConnection,
     RadioNumberSelected(Number),
     SudokuButtonClicked(usize, usize),
+}
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Message::WebSocketEvent(_) => "WebSocketEvent",
+                Message::InputNickname(_) => "InputNickname",
+                Message::InputLobbyName(_) => "InputLobbyName",
+                Message::JoinLobby => "JoinLobby",
+                Message::CancelConnection => "CancelConnection",
+                Message::RadioNumberSelected(_) => "RadioNumberSelected",
+                Message::SudokuButtonClicked(_, _) => "SudokuButtonClicked",
+            }
+        )
+    }
 }
 
 /// Events that happens at the `WebRtcSocket` level.
@@ -299,88 +147,215 @@ enum PlayerAction {
 }
 
 fn main() -> iced::Result {
-    println!("Hello, sudo-vs!");
     init_logger();
-
     iced::application(App::default, update, view)
         .subscription(subscription)
         .run()
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn update(app: &mut App, message: Message) -> Task<Message> {
-    match message {
-        Message::WebSocketEvent(event) => match event {
-            WebSocketEvent::Ready(sender) => app.set_sender(sender),
-            WebSocketEvent::PeerConnected(peer) => {
-                debug!("Peer connected: {peer}");
-                let action = PlayerAction::Nickname(app.nickname().clone());
-                let bytes = postcard::to_allocvec(&action).unwrap();
-                if let Err(e) = app.get_sender().try_send(Command::Send(peer, bytes)) {
-                    debug!("Failed to queue nickname: {e}");
-                }
-            }
-            WebSocketEvent::PeerDisconnected(peer) => {
-                debug!("Peer disconnected: {peer}");
-                app.transition_to_selecting_lobby("peer disconnected".to_string());
-            }
-            WebSocketEvent::Message(peer, packet) => {
-                debug!("Received data from {peer}");
-                let player_action: PlayerAction = postcard::from_bytes(&packet).unwrap();
-                match player_action {
-                    PlayerAction::Nickname(opponent_nickname) => {
-                        debug!("Nickname: {opponent_nickname}");
-                        app.set_opponent_nickname(opponent_nickname);
-                        app.transition_to_game();
-                    }
-                    PlayerAction::NumberPlacement {
-                        row,
-                        column,
-                        number,
-                    } => {
-                        debug!(
-                            "Opponent number placement: {row}, column: {column}, number: {number}"
-                        );
-                        game_place_number(app, row, column, number);
-                    }
-                }
-            }
-            WebSocketEvent::Closed => {
-                debug!("Connection closed");
-                app.transition_to_selecting_lobby("peer disconnected".to_string());
-            }
-        },
-        Message::InputNickname(nickname) => *app.nickname_mut() = nickname,
-        Message::InputLobbyName(lobby_name) => *app.lobby_name_mut() = lobby_name,
-        Message::JoinLobby => {
-            if app.can_join_lobby() {
-                app.transition_to_connecting();
-                debug!("Join lobby");
+    match (&mut app.state, message) {
+        /*
+         * SelectingLobby.
+         */
+        (State::SelectingLobby { .. }, Message::JoinLobby) => {
+            app.state = State::Connecting {
+                opponent_peer_id: None,
+                sender: None,
+            };
+        }
+        (State::SelectingLobby { .. }, Message::InputNickname(new_nickname)) => {
+            app.nickname = new_nickname;
+        }
+        (State::SelectingLobby { info, .. }, Message::InputLobbyName(new_lobby_name)) => {
+            app.lobby_name = new_lobby_name;
+            if !app.lobby_name.chars().all(char::is_alphanumeric) {
+                info.clear();
+                info.push_str("Lobby name should be alphanumeric");
             }
         }
-        Message::RadioNumberSelected(number) => *app.selected_number_mut() = Some(number),
-        Message::SudokuButtonClicked(row, column) => {
-            if let Some(selected_number) = *app.selected_number() {
+        /*
+         * Connecting.
+         */
+        (State::Connecting { .. }, Message::CancelConnection) => {
+            app.state = State::SelectingLobby {
+                info: String::new(),
+            };
+        }
+        (State::Connecting { sender, .. }, Message::WebSocketEvent(WebSocketEvent::Ready(s))) => {
+            *sender = Some(s);
+        }
+        (
+            State::Connecting {
+                sender,
+                opponent_peer_id,
+            },
+            Message::WebSocketEvent(WebSocketEvent::PeerConnected(peer)),
+        ) => {
+            if let Some(sender) = sender {
+                let player_action = PlayerAction::Nickname(app.nickname.clone());
+                match postcard::to_allocvec(&player_action) {
+                    Ok(bytes) => {
+                        if let Err(e) = sender.try_send(Command::Send(peer, bytes)) {
+                            debug!("Failed to queue move: {e}");
+                        }
+                        *opponent_peer_id = Some(peer);
+                    }
+                    Err(e) => debug!("Failed to serialize nickname: {e}"),
+                }
+            } else {
+                debug!("No sender to send nickname");
+                app.state = State::SelectingLobby {
+                    info: "An error occurred while connecting to peer.".into(),
+                };
+            }
+        }
+        (
+            State::Connecting {
+                opponent_peer_id, ..
+            },
+            Message::WebSocketEvent(WebSocketEvent::PeerDisconnected(peer_id)),
+        ) => {
+            let Some(opponent_peer_id) = opponent_peer_id else {
+                app.state = State::SelectingLobby {
+                    info: String::new(),
+                };
+                return Task::none();
+            };
+
+            if *opponent_peer_id == peer_id {
+                app.state = State::SelectingLobby {
+                    info: String::new(),
+                };
+            }
+        }
+        (
+            State::Connecting {
+                sender,
+                opponent_peer_id,
+            },
+            Message::WebSocketEvent(WebSocketEvent::Message(packet_peer_id, packet)),
+        ) => {
+            let Some(peer_id) = opponent_peer_id else {
+                debug!("Received message but no peer_id registered");
+                return Task::none();
+            };
+
+            if *peer_id != packet_peer_id {
+                debug!(
+                    "Received message from another peer. Expected {peer_id}, got {packet_peer_id}"
+                );
+                return Task::none();
+            }
+
+            match postcard::from_bytes(&packet) {
+                Ok(PlayerAction::Nickname(opponent_nickname)) => {
+                    debug!("Nickname: {opponent_nickname}");
+                    let Some(sender) = sender.take() else {
+                        debug!("No sender");
+                        app.state = State::SelectingLobby {
+                            info: "An error occurred while connecting to peer.".into(),
+                        };
+                        return Task::none();
+                    };
+                    if let Some(opponent_peer_id) = opponent_peer_id.take() {
+                        let is_playing_first = app.nickname < opponent_nickname;
+                        app.state = State::Game(GameState {
+                            is_playing_first,
+                            opponent_peer_id,
+                            opponent_nickname,
+                            game: Game::new(),
+                            selected_number: None,
+                            sender,
+                        });
+                    } else {
+                        debug!("Should not happen");
+                    }
+                }
+                Ok(_) => debug!("Ignoring action while connecting"),
+                Err(e) => debug!("Malformed packet: {e}"),
+            }
+        }
+        (State::Connecting { .. }, Message::WebSocketEvent(WebSocketEvent::Closed)) => {
+            debug!("Connection closed");
+            app.state = State::SelectingLobby {
+                info: "Connection closed".into(),
+            };
+        }
+        /*
+         * Game.
+         */
+        (State::Game(g), Message::RadioNumberSelected(n)) => g.selected_number = Some(n),
+        (State::Game(g), Message::SudokuButtonClicked(row, column)) => {
+            if let Some(number) = g.selected_number {
                 let player_action = PlayerAction::NumberPlacement {
                     row,
                     column,
-                    number: selected_number,
+                    number,
                 };
-                let bytes = postcard::to_allocvec(&player_action).unwrap();
-                if let Err(e) = app.get_sender().try_send(Command::Broadcast(bytes)) {
-                    debug!("Failed to queue move: {e}");
+                match postcard::to_allocvec(&player_action) {
+                    Ok(bytes) => {
+                        if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
+                            debug!("Failed to queue move: {e}");
+                        } else {
+                            // TODO: handle actual player.
+                            game_place_number(g, row, column, number);
+                            // TODO: send to opponent.
+                        }
+                    }
+                    Err(e) => debug!("Failed to serialize move: {e}"),
                 }
-                game_place_number(app, row, column, selected_number);
             } else {
                 debug!("No number selected");
             }
         }
+        (State::Game(g), Message::WebSocketEvent(WebSocketEvent::PeerDisconnected(peer_id))) => {
+            debug!("Peer disconnected: {peer_id}");
+            if g.opponent_peer_id == peer_id {
+                debug!("Opponent disconnected");
+                app.state = State::SelectingLobby {
+                    info: "Opponent disconnected".into(),
+                };
+            }
+        }
+        (State::Game(g), Message::WebSocketEvent(WebSocketEvent::Message(peer_id, bytes))) => {
+            if g.opponent_peer_id != peer_id {
+                debug!(
+                    "Received message from another peer. Expected {}, got {peer_id}",
+                    g.opponent_peer_id
+                );
+                return Task::none();
+            }
+
+            match postcard::from_bytes(&bytes) {
+                Ok(PlayerAction::NumberPlacement {
+                    row,
+                    column,
+                    number,
+                }) => {
+                    // TODO: handle actual player.
+                    game_place_number(g, row, column, number);
+                }
+                Ok(_) => debug!("Ignoring nickname while in game"),
+                Err(e) => debug!("Malformed packet: {e}"),
+            }
+        }
+        (State::Game(_g), Message::WebSocketEvent(WebSocketEvent::Closed)) => {
+            debug!("Connection closed");
+            app.state = State::SelectingLobby {
+                info: "Connection closed".into(),
+            };
+        }
+        /*
+         * Invalid state/message pair.
+         */
+        (state, msg) => debug!("ignore message({msg}) in current state({state})"),
     }
     Task::none()
 }
 
-fn game_place_number(app: &mut App, row: usize, column: usize, number: Number) {
-    let outcome = app.game_mut().place_number(row, column, number);
+fn game_place_number(g: &mut GameState, row: usize, column: usize, number: Number) {
+    let outcome = g.game.place_number(row, column, number);
     match outcome {
         NumberPlacingOutcome::Ok => debug!("Valid position"),
         NumberPlacingOutcome::CellNotEmpty => {
@@ -390,7 +365,7 @@ fn game_place_number(app: &mut App, row: usize, column: usize, number: Number) {
         NumberPlacingOutcome::GameOver(reason) => match reason {
             GameOutcome::Draw => {
                 debug!("Draw");
-                app.transition_to_selecting_lobby("Draw".to_string());
+                // TODO: how to handle app state changes ?
             }
             GameOutcome::NumberAlreadyInSquare => debug!("already in square, player lost"),
             GameOutcome::NumberAlreadyInRow => debug!("already in row, player lost"),
@@ -401,9 +376,9 @@ fn game_place_number(app: &mut App, row: usize, column: usize, number: Number) {
 }
 
 fn subscription(app: &App) -> Subscription<Message> {
-    match app {
-        App::SelectingLobby { .. } => Subscription::none(),
-        App::Connecting { lobby_name, .. } | App::Game { lobby_name, .. } => connect(format!(
+    match &app.state {
+        State::SelectingLobby { .. } => Subscription::none(),
+        State::Connecting { .. } | State::Game(_) => connect(format!(
             "ws://localhost:3536/", // {}/?players=2
                                     // app.lobby_name()
         ))
@@ -430,11 +405,11 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
                     }
                     cmd = cmd_rx.select_next_some() => match cmd {
                         Command::Send(peer, data) => {
-                            debug!("Sending data tp {peer}");
+                            debug!("Sending data to {peer}");
                             socket.channel_mut(0).send(data.into(), peer);
                         }
                         Command::Broadcast(data) => {
-                            debug!("Sending fata to all peers.");
+                            debug!("Sending data to all peers.");
                             let peers: Vec<_> = socket.connected_peers().collect();
                             for p in peers {
                                 socket.channel_mut(0).send(data.clone().into(), p);
@@ -462,38 +437,79 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
-    match app {
-        App::SelectingLobby { .. } => view_selecting_lobby(app),
-        App::Connecting { .. } => view_connecting(app),
-        App::Game { .. } => view_game(app),
+    match &app.state {
+        State::SelectingLobby { info, .. } => {
+            let nickname = &app.nickname;
+            let lobby_name = &app.lobby_name;
+            view_selecting_lobby(info, nickname, lobby_name)
+        }
+        State::Connecting { .. } => view_connecting(),
+        State::Game(g) => view_game(&app.nickname, g),
     }
 }
 
-fn view_selecting_lobby(app: &App) -> Element<'_, Message> {
-    container(col![
-        text(app.info()),
-        row![
-            text("Nickname: "),
-            text_input("Enter your nickname", app.nickname()).on_input(Message::InputNickname),
-        ],
-        row![
-            text("Lobby: "),
-            text_input("Lobby name", app.lobby_name()).on_input(Message::InputLobbyName),
-        ],
-        button("Join").on_press(Message::JoinLobby)
-    ])
+fn view_selecting_lobby<'a>(
+    info: &'a str,
+    nickname: &'a str,
+    lobby_name: &'a str,
+) -> Element<'a, Message> {
+    container(
+        col![
+            text(info),
+            row![
+                space().width(Length::Fill),
+                text("Nickname: ")
+                    .width(Length::Fixed(90.0))
+                    .align_x(Alignment::End),
+                text_input("Enter your nickname", nickname)
+                    .on_input(Message::InputNickname)
+                    .width(Length::Fill),
+                space().width(Length::Fill),
+            ]
+            .align_y(Alignment::Center),
+            row![
+                space().width(Length::Fill),
+                text("Lobby: ")
+                    .width(Length::Fixed(90.0))
+                    .align_x(Alignment::End),
+                text_input("Lobby name", lobby_name)
+                    .on_input(Message::InputLobbyName)
+                    .width(Length::Fill),
+                space().width(Length::Fill),
+            ]
+            .align_y(Alignment::Center),
+            button("Join")
+                .on_press_maybe(can_join_lobby(nickname, lobby_name).then_some(Message::JoinLobby))
+        ]
+        .spacing(10)
+        .align_x(Alignment::Center),
+    )
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
     .into()
 }
 
-fn view_connecting(_app: &App) -> Element<'_, Message> {
-    container(text("Connecting.../Waiting for someone to connect").size(120))
-        .center(Length::Fill)
-        .into()
+fn can_join_lobby(nickname: &str, lobby_name: &str) -> bool {
+    let is_all_alphanumeric = lobby_name.chars().all(char::is_alphanumeric);
+    !nickname.is_empty() && !lobby_name.is_empty() && is_all_alphanumeric
 }
 
-fn view_game(app: &App) -> Element<'_, Message> {
+fn view_connecting() -> Element<'static, Message> {
     container(
-        col![player_turn(app), view_grid(app), number_selection(app),]
+        col![
+            text("Connecting / Waiting for someone to connect...").size(40),
+            button("Cancel").on_press(Message::CancelConnection),
+        ]
+        .align_x(Alignment::Center),
+    )
+    .center(Length::Fill)
+    .center_y(Length::Fill)
+    .into()
+}
+
+fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
+    container(
+        col![player_turn(nickname, g), show_grid(g), number_selection(g)]
             .align_x(Alignment::Center)
             .spacing(10),
     )
@@ -502,23 +518,36 @@ fn view_game(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn player_turn(app: &App) -> Element<'_, Message> {
-    text(format!("{}'s turn", player_to_name(app.game().playing()))).into()
+fn player_turn<'a>(nickname: &'a str, g: &GameState) -> Element<'a, Message> {
+    text(format!(
+        "{}'s turn",
+        player_to_name(
+            nickname,
+            &g.opponent_nickname,
+            g.is_playing_first,
+            g.game.playing()
+        )
+    ))
+    .into()
 }
 
-fn player_to_name(player: &Player) -> &'static str {
-    // TODO: use players' nicknames.
-    match player {
-        Player::Player1 => "Bob",
-        Player::Player2 => "Patrick",
+fn player_to_name<'a>(
+    nickname: &'a str,
+    opponent_nickname: &'a str,
+    is_playing_first: bool,
+    player: &Player,
+) -> &'a str {
+    match (is_playing_first, player) {
+        (true, Player::Player1) | (false, Player::Player2) => nickname,
+        (false, Player::Player1) | (true, Player::Player2) => opponent_nickname,
     }
 }
 
-fn view_grid(app: &App) -> Element<'_, Message> {
-    let grid = app.game().grid();
+fn show_grid(g: &GameState) -> Element<'_, Message> {
+    let grid = g.game.grid();
 
     Column::with_children((0..3).map(|square_y| {
-        Row::with_children((0..3).map(|square_x| view_square(grid, square_x, square_y)))
+        Row::with_children((0..3).map(|square_x| show_square(grid, square_x, square_y)))
             .spacing(SQUARE_SPACING)
             .into()
     }))
@@ -526,7 +555,7 @@ fn view_grid(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn view_square(
+fn show_square(
     grid: &[[Option<Number>; 9]; 9],
     square_x: usize,
     square_y: usize,
@@ -581,30 +610,25 @@ fn style_button(theme: &Theme, status: button::Status) -> Style {
     style
 }
 
-fn number_selection(app: &App) -> Element<'_, Message> {
-    let one = number_to_radio(app, Number::One);
-    let two = number_to_radio(app, Number::Two);
-    let three = number_to_radio(app, Number::Three);
-    let four = number_to_radio(app, Number::Four);
-    let five = number_to_radio(app, Number::Five);
-    let six = number_to_radio(app, Number::Six);
-    let seven = number_to_radio(app, Number::Seven);
-    let eight = number_to_radio(app, Number::Eight);
-    let nine = number_to_radio(app, Number::Nine);
+fn number_selection(g: &GameState) -> Element<'_, Message> {
+    let one = number_to_radio(g.selected_number, Number::One);
+    let two = number_to_radio(g.selected_number, Number::Two);
+    let three = number_to_radio(g.selected_number, Number::Three);
+    let four = number_to_radio(g.selected_number, Number::Four);
+    let five = number_to_radio(g.selected_number, Number::Five);
+    let six = number_to_radio(g.selected_number, Number::Six);
+    let seven = number_to_radio(g.selected_number, Number::Seven);
+    let eight = number_to_radio(g.selected_number, Number::Eight);
+    let nine = number_to_radio(g.selected_number, Number::Nine);
     row![one, two, three, four, five, six, seven, eight, nine]
         .spacing(10)
         .into()
 }
 
-fn number_to_radio(app: &App, number: Number) -> Element<'_, Message> {
+fn number_to_radio(selected_number: Option<Number>, number: Number) -> Element<'static, Message> {
     col![
         text(format!("{number}  ")),
-        radio(
-            "",
-            number,
-            *app.selected_number(),
-            Message::RadioNumberSelected,
-        ),
+        radio("", number, selected_number, Message::RadioNumberSelected,),
     ]
     .align_x(Alignment::Center)
     .spacing(5)

@@ -93,8 +93,6 @@ pub enum GameOutcome {
     NoValidPositions,
 }
 
-type Line = [Option<Number>; 9];
-
 pub struct Game {
     /// The player to do the next move.
     playing: Player,
