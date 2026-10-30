@@ -287,26 +287,31 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
          */
         (State::Game(g), Message::RadioNumberSelected(n)) => g.selected_number = Some(n),
         (State::Game(g), Message::SudokuButtonClicked(row, column)) => {
-            if let Some(number) = g.selected_number {
-                let player_action = PlayerAction::NumberPlacement {
-                    row,
-                    column,
-                    number,
-                };
-                match postcard::to_allocvec(&player_action) {
-                    Ok(bytes) => {
-                        if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
-                            debug!("Failed to queue move: {e}");
-                        } else {
-                            // TODO: handle actual player.
-                            game_place_number(g, row, column, number);
-                            // TODO: send to opponent.
+            if is_player_turn(g.is_playing_first, g.game.playing()) {
+                if let Some(number) = g.selected_number {
+                    let player_action = PlayerAction::NumberPlacement {
+                        row,
+                        column,
+                        number,
+                    };
+                    match postcard::to_allocvec(&player_action) {
+                        Ok(bytes) => {
+                            if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
+                                debug!("Failed to queue move: {e}");
+                            } else {
+                                let new_state = game_place_number(g, row, column, number);
+                                if let Some(new_state) = new_state {
+                                    app.state = new_state;
+                                }
+                            }
                         }
+                        Err(e) => debug!("Failed to serialize move: {e}"),
                     }
-                    Err(e) => debug!("Failed to serialize move: {e}"),
+                } else {
+                    debug!("No number selected");
                 }
             } else {
-                debug!("No number selected");
+                debug!("Player tried to play outside of it's turn");
             }
         }
         (State::Game(g), Message::WebSocketEvent(WebSocketEvent::PeerDisconnected(peer_id))) => {
@@ -333,8 +338,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     column,
                     number,
                 }) => {
-                    // TODO: handle actual player.
-                    game_place_number(g, row, column, number);
+                    if is_opponent_turn(g.is_playing_first, g.game.playing()) {
+                        let new_state = game_place_number(g, row, column, number);
+                        if let Some(new_state) = new_state {
+                            app.state = new_state;
+                        }
+                    } else {
+                        debug!("Opponent tried to play outside of it's turn.");
+                    }
                 }
                 Ok(_) => debug!("Ignoring nickname while in game"),
                 Err(e) => debug!("Malformed packet: {e}"),
@@ -354,7 +365,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     Task::none()
 }
 
-fn game_place_number(g: &mut GameState, row: usize, column: usize, number: Number) {
+fn game_place_number(
+    g: &mut GameState,
+    row: usize,
+    column: usize,
+    number: Number,
+) -> Option<State> {
     let outcome = g.game.place_number(row, column, number);
     match outcome {
         NumberPlacingOutcome::Ok => debug!("Valid position"),
@@ -362,17 +378,41 @@ fn game_place_number(g: &mut GameState, row: usize, column: usize, number: Numbe
             // Non-empty cell are not clickable, should not happen.
             debug!("Cell is not empty");
         }
-        NumberPlacingOutcome::GameOver(reason) => match reason {
-            GameOutcome::Draw => {
-                debug!("Draw");
-                // TODO: how to handle app state changes ?
-            }
-            GameOutcome::NumberAlreadyInSquare => debug!("already in square, player lost"),
-            GameOutcome::NumberAlreadyInRow => debug!("already in row, player lost"),
-            GameOutcome::NumberAlreadyInColumn => debug!("already in column, player lost"),
-            GameOutcome::NoValidPositions => debug!("unsupported yet"),
-        },
+        NumberPlacingOutcome::GameOver(reason) => {
+            let win_message = if is_player_turn(g.is_playing_first, g.game.playing()) {
+                "You Lost!"
+            } else {
+                "You Won!"
+            };
+            let reason = match reason {
+                GameOutcome::Draw => {
+                    debug!("Draw");
+                    "Draw"
+                }
+                GameOutcome::NumberAlreadyInSquare => {
+                    debug!("already in square, player lost");
+                    win_message
+                }
+                GameOutcome::NumberAlreadyInRow => {
+                    debug!("already in row, player lost");
+                    win_message
+                }
+                GameOutcome::NumberAlreadyInColumn => {
+                    debug!("already in column, player lost");
+                    win_message
+                }
+                GameOutcome::NoValidPositions => {
+                    debug!("unsupported yet");
+                    win_message
+                }
+            };
+            return Some(State::SelectingLobby {
+                info: reason.into(),
+            });
+        }
     }
+
+    None
 }
 
 fn subscription(app: &App) -> Subscription<Message> {
@@ -537,10 +577,22 @@ fn player_to_name<'a>(
     is_playing_first: bool,
     player: &Player,
 ) -> &'a str {
-    match (is_playing_first, player) {
-        (true, Player::Player1) | (false, Player::Player2) => nickname,
-        (false, Player::Player1) | (true, Player::Player2) => opponent_nickname,
+    if is_player_turn(is_playing_first, player) {
+        nickname
+    } else {
+        opponent_nickname
     }
+}
+
+fn is_player_turn(is_playing_first: bool, player: &Player) -> bool {
+    match (is_playing_first, player) {
+        (true, Player::Player1) | (false, Player::Player2) => true,
+        (false, Player::Player1) | (true, Player::Player2) => false,
+    }
+}
+
+fn is_opponent_turn(is_playing_first: bool, player: &Player) -> bool {
+    !is_player_turn(is_playing_first, player)
 }
 
 fn show_grid(g: &GameState) -> Element<'_, Message> {
