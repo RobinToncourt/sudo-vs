@@ -419,8 +419,8 @@ fn subscription(app: &App) -> Subscription<Message> {
     match &app.state {
         State::SelectingLobby { .. } => Subscription::none(),
         State::Connecting { .. } | State::Game(_) => connect(format!(
-            "ws://localhost:3536/", // {}/?players=2
-                                    // app.lobby_name()
+            "wss://web-socket-signaling-server.onrender.com/{}", // {}/?players=2
+            app.lobby_name
         ))
         .map(Message::WebSocketEvent),
     }
