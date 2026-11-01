@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # GUI.
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", features = ["tokio", "fira-sans"] }
 
 # Extensions for futures.
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
