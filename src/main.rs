@@ -147,7 +147,15 @@ enum PlayerAction {
 }
 
 fn main() -> iced::Result {
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        console_log::init_with_level(log::Level::Debug).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     init_logger();
+    
     iced::application(App::default, update, view)
         .subscription(subscription)
         .run()

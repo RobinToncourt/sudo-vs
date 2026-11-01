@@ -20,3 +20,8 @@ postcard = { version = "1", features = ["alloc"] }
 # Logging.
 log = { version = "0.4", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Log error for WASM build on WEB browser.
+console_error_panic_hook = "0.1"
+console_log = "1"
