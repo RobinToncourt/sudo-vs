@@ -16,16 +16,19 @@ use iced::{
         text_input,
     },
 };
+use iced_aw::DropDown;
 
 use futures_timer::Delay;
-
+use iced::widget::scrollable;
 use log::debug;
 
 use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
 
 use serde::{Deserialize, Serialize};
 
-use crate::game::{Game, Grid, Number, Outcome, PlaceError, Placement, Player, Position};
+use crate::game::{
+    File, Game, GameResult, Grid, Number, Outcome, PlaceError, Placement, Player, Position, Rank,
+};
 
 const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
@@ -59,6 +62,7 @@ struct GameState {
     opponent_peer_id: PeerId,
     opponent_nickname: String,
     game: Game,
+    last_placement: Option<Position>,
     selected_number: Option<Number>,
     sender: mpsc::Sender<Command>,
 }
@@ -103,7 +107,9 @@ enum State {
     Game(GameState),
     GameOver {
         info: GameOverInfo,
+        is_playing_first: bool,
         game: Game,
+        last_placement: Option<Position>,
         // Keep the sender so the last move is flush.
         _sender: mpsc::Sender<Command>,
     },
@@ -125,7 +131,32 @@ impl Display for State {
     }
 }
 
+#[derive(Clone)]
+enum Localization {
+    En,
+    Fr,
+}
+impl Display for Localization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Localization::En => "English",
+                Localization::Fr => "Français",
+            }
+        )
+    }
+}
+impl Localization {
+    const ALL: &[Self] = &[Self::En, Self::Fr];
+}
+
 struct App {
+    theme: Theme,
+    theme_expanded: bool,
+    localization: Localization,
+    localization_expanded: bool,
     nickname: String,
     lobby_name: String,
     signaling_server_url: String,
@@ -134,11 +165,15 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            theme: Theme::Light,
+            theme_expanded: false,
+            localization: Localization::En,
+            localization_expanded: false,
             nickname: String::from("Bob"),
             lobby_name: String::from("test"),
             signaling_server_url: String::from(
                 // "wss://web-socket-signaling-server.onrender.com/<lobby_name>",
-                "ws://localhost:3536/<lobby_name>"
+                "ws://localhost:3536/<lobby_name>",
             ),
             state: State::SelectingLobby {
                 info: LobbyInfo::None,
@@ -150,6 +185,10 @@ impl Default for App {
 /// App level messages.
 #[derive(Clone)]
 enum Message {
+    ThemeExpand,
+    SelectedTheme(Theme),
+    LocalizationExpand,
+    SelectedLocalization(Localization),
     WebSocketEvent(WebSocketEvent),
     /// Input the nickname.
     InputNickname(String),
@@ -174,17 +213,21 @@ impl Display for Message {
             f,
             "{}",
             match self {
-                Message::WebSocketEvent(_) => "WebSocketEvent",
-                Message::InputNickname(_) => "InputNickname",
-                Message::InputLobbyName(_) => "InputLobbyName",
-                Message::InputSignalingServer(_) => "InputSignalingServer",
-                Message::JoinLobby => "JoinLobby",
-                Message::CancelConnection => "CancelConnection",
-                Message::RadioNumberSelected(_) => "RadioNumberSelected",
-                Message::SudokuButtonClicked(_) => "SudokuButtonClicked",
-                Message::Forfeit => "Forfeit",
-                Message::GameOver => "GameOver",
-                Message::ReturnToLobby => "ReturnToLobby",
+                Self::ThemeExpand => "Theme Expand",
+                Self::SelectedTheme(_) => "Selected Theme",
+                Self::LocalizationExpand => "Localization Expand",
+                Self::SelectedLocalization(_) => "Localization Expand",
+                Self::WebSocketEvent(_) => "WebSocketEvent",
+                Self::InputNickname(_) => "InputNickname",
+                Self::InputLobbyName(_) => "InputLobbyName",
+                Self::InputSignalingServer(_) => "InputSignalingServer",
+                Self::JoinLobby => "JoinLobby",
+                Self::CancelConnection => "CancelConnection",
+                Self::RadioNumberSelected(_) => "RadioNumberSelected",
+                Self::SudokuButtonClicked(_) => "SudokuButtonClicked",
+                Self::Forfeit => "Forfeit",
+                Self::GameOver => "GameOver",
+                Self::ReturnToLobby => "ReturnToLobby",
             }
         )
     }
@@ -202,7 +245,6 @@ enum WebSocketEvent {
 
 /// Commands to send to the `WebRtcSocket`.
 enum Command {
-    Send(PeerId, Vec<u8>),
     Broadcast(Vec<u8>),
 }
 
@@ -226,11 +268,34 @@ fn main() -> iced::Result {
 
     iced::application(App::default, update, view)
         .subscription(subscription)
+        .theme(theme)
         .run()
+}
+
+fn theme(app: &App) -> Theme {
+    app.theme.clone()
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match (&mut app.state, message) {
+        /*
+         * Theme.
+         */
+        (_, Message::ThemeExpand) => {
+            app.theme_expanded = !app.theme_expanded;
+        }
+        (_, Message::SelectedTheme(theme)) => {
+            app.theme = theme;
+        }
+        /*
+         * Localization.
+         */
+        (_, Message::LocalizationExpand) => {
+            app.localization_expanded = !app.localization_expanded;
+        }
+        (_, Message::SelectedLocalization(localization)) => {
+            app.localization = localization;
+        }
         /*
          * SelectingLobby.
          */
@@ -354,8 +419,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         opponent_peer_id: *opponent_peer_id,
                         opponent_nickname,
                         game: Game::default(),
+                        last_placement: None,
                         selected_number: None,
-                        // How to not have `expect` here ?
                         sender: sender.clone(),
                     });
                 }
@@ -371,7 +436,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 debug!("GameOver");
                 app.state = State::GameOver {
                     info: GameOverInfo::OpponentDisconnected,
+                    is_playing_first: g.is_playing_first,
                     game: g.game.clone(),
+                    last_placement: None,
                     _sender: g.sender.clone(),
                 };
             } else {
@@ -382,7 +449,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             debug!("GameOver");
             app.state = State::GameOver {
                 info: GameOverInfo::ConnectionClosed,
+                is_playing_first: g.is_playing_first,
                 game: g.game.clone(),
+                last_placement: None,
                 _sender: g.sender.clone(),
             }
         }
@@ -400,13 +469,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 
             match postcard::from_bytes(&packet) {
                 Ok(PlayerAction::NumberPlacement(placement)) => {
+                    g.last_placement = Some(placement.position());
                     return game_place_number(g, placement);
                 }
                 Ok(PlayerAction::Forfeit) => {
                     debug!("GameOver");
                     app.state = State::GameOver {
                         info: GameOverInfo::OpponentForfeit,
+                        is_playing_first: g.is_playing_first,
                         game: g.game.clone(),
+                        last_placement: g.last_placement,
                         _sender: g.sender.clone(),
                     }
                 }
@@ -426,6 +498,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
                             debug!("Failed to queue move: {e}");
                         } else {
+                            g.last_placement = Some(placement.position());
                             return game_place_number(g, placement);
                         }
                     }
@@ -445,7 +518,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         debug!("GameOver");
                         app.state = State::GameOver {
                             info: GameOverInfo::PlayerForfeit,
+                            is_playing_first: g.is_playing_first,
                             game: g.game.clone(),
+                            last_placement: None,
                             _sender: g.sender.clone(),
                         };
                     }
@@ -457,7 +532,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             debug!("GameOver");
             app.state = State::GameOver {
                 info: GameOverInfo::Finished,
+                is_playing_first: g.is_playing_first,
                 game: g.game.clone(),
+                last_placement: g.last_placement,
                 _sender: g.sender.clone(),
             };
         }
@@ -524,10 +601,6 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
                         break;
                     }
                     cmd = cmd_rx.select_next_some() => match cmd {
-                        Command::Send(peer, data) => {
-                            debug!("Sending data to {peer}");
-                            socket.channel_mut(0).send(data.into(), peer);
-                        }
                         Command::Broadcast(data) => {
                             debug!("Sending data to all peers.");
                             let peers: Vec<_> = socket.connected_peers().collect();
@@ -561,7 +634,9 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
-    match &app.state {
+    let top_bar = top_bar(app);
+
+    let main_element = match &app.state {
         State::SelectingLobby { info, .. } => {
             let nickname = &app.nickname;
             let lobby_name = &app.lobby_name;
@@ -572,8 +647,62 @@ fn view(app: &App) -> Element<'_, Message> {
             view_connecting()
         }
         State::Game(g) => view_game(&app.nickname, g),
-        State::GameOver { info, game, .. } => view_game_over(*info, game),
-    }
+        State::GameOver {
+            info,
+            is_playing_first,
+            game,
+            last_placement,
+            ..
+        } => view_game_over(*info, *is_playing_first, game, *last_placement),
+    };
+
+    col![
+        top_bar,
+        main_element,
+    ].into()
+}
+
+fn top_bar(app: &App) -> Element<'_, Message> {
+    let theme_menu = theme_menu(app);
+    let language_menu = language_menu(app);
+
+    row![theme_menu, language_menu].into()
+}
+
+fn theme_menu(app: &App) -> Element<'_, Message> {
+    let underlay = Row::new()
+        .push(button(text(format!("{}", app.theme))).on_press(Message::ThemeExpand))
+        .spacing(8)
+        .align_y(Alignment::Center);
+    let options = Column::with_children(Theme::ALL.iter().map(|theme| {
+        Row::new()
+            .push(button(text(theme.to_string())).on_press(Message::SelectedTheme(theme.clone())))
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
+    }));
+    let overlay = scrollable(container(options.padding([0, 4])).style(container::bordered_box));
+
+    let theme_drop_down = DropDown::new(underlay, overlay, app.theme_expanded);
+    theme_drop_down.into()
+}
+
+fn language_menu(app: &App) -> Element<'_, Message> {
+    let underlay = Row::new()
+        .push(button(text(format!("{}", app.localization))).on_press(Message::LocalizationExpand))
+        .spacing(8)
+        .align_y(Alignment::Center);
+    let options = Column::with_children(Localization::ALL.iter().map(|localization| {
+        Row::new()
+            .push(button(text(localization.to_string())).on_press(Message::SelectedLocalization(localization.clone())))
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
+    }));
+    let overlay = scrollable(container(options.padding([0, 4])).style(container::bordered_box));
+
+    let localization_drop_down = DropDown::new(underlay, overlay, app.localization_expanded);
+    localization_drop_down.into()
 }
 
 fn view_selecting_lobby<'a>(
@@ -658,7 +787,7 @@ fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
     container(
         col![
             player_turn(nickname, g),
-            show_grid(&g.game, GridInteraction::Interactive),
+            show_grid(&g.game, GridInteraction::Interactive, g.last_placement),
             number_selection(g),
             button("Forfeit").on_press(Message::Forfeit),
         ]
@@ -670,11 +799,31 @@ fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
     .into()
 }
 
-fn view_game_over(info: GameOverInfo, g: &Game) -> Element<'_, Message> {
+fn view_game_over(
+    info: GameOverInfo,
+    is_player_first: bool,
+    g: &Game,
+    last_placement: Option<Position>,
+) -> Element<'_, Message> {
+    let end_text = match info {
+        GameOverInfo::Finished => match g.result() {
+            Some(GameResult::Draw) => "Draw".to_string(),
+            Some(GameResult::Loss { loser, .. }) => {
+                if is_player_self(is_player_first, loser) {
+                    "You lost.".to_string()
+                } else {
+                    "You won.".to_string()
+                }
+            }
+            None => "Finished".to_string(),
+        },
+        _ => info.to_string(),
+    };
     container(
         col![
-            text(info.to_string()),
-            show_grid(g, GridInteraction::None),
+            text(end_text),
+            show_grid(g, GridInteraction::None, last_placement),
+            // TODO: button to save history.
             button("Return to lobby").on_press(Message::ReturnToLobby),
         ]
         .align_x(Alignment::Center)
@@ -704,66 +853,92 @@ fn player_to_name<'a>(
     is_playing_first: bool,
     player: Player,
 ) -> &'a str {
-    if is_player_turn(is_playing_first, player) {
+    if is_player_self(is_playing_first, player) {
         nickname
     } else {
         opponent_nickname
     }
 }
 
-fn is_player_turn(is_playing_first: bool, player: Player) -> bool {
+fn is_player_self(is_playing_first: bool, player: Player) -> bool {
     match (is_playing_first, player) {
         (true, Player::Player1) | (false, Player::Player2) => true,
         (false, Player::Player1) | (true, Player::Player2) => false,
     }
 }
 
-fn is_opponent_turn(is_playing_first: bool, player: Player) -> bool {
-    !is_player_turn(is_playing_first, player)
+fn is_player_opponent(is_playing_first: bool, player: Player) -> bool {
+    !is_player_self(is_playing_first, player)
 }
 
+#[derive(Debug, Clone, Copy)]
 enum GridInteraction {
     Interactive,
     None,
 }
 
-fn show_grid(g: &Game, grid_interaction: GridInteraction) -> Element<'_, Message> {
+fn show_grid(
+    g: &Game,
+    grid_interaction: GridInteraction,
+    highlight_position: Option<Position>,
+) -> Element<'_, Message> {
     let grid = g.grid();
 
-    Column::with_children((0..3).map(|square_y| {
-        Row::with_children((0..3).map(|square_x| show_square(grid, square_x, square_y)))
-            .spacing(SQUARE_SPACING)
-            .into()
+    Column::with_children([File::A, File::D, File::G].map(|file| {
+        Row::with_children(
+            [Rank::One, Rank::Four, Rank::Seven]
+                .map(|rank| show_square(grid, rank, file, grid_interaction, highlight_position)),
+        )
+        .spacing(SQUARE_SPACING)
+        .into()
     }))
     .spacing(SQUARE_SPACING)
     .into()
 }
 
-fn show_square(grid: &Grid, square_x: usize, square_y: usize) -> Element<'_, Message> {
-    Column::with_children((0..3).map(|dy| {
-        Row::with_children((0..3).map(|dx| {
-            let x = square_x * 3 + dx;
-            let y = square_y * 3 + dy;
-
+fn show_square(
+    grid: &Grid,
+    rank: Rank,
+    file: File,
+    grid_interaction: GridInteraction,
+    highlight_position: Option<Position>,
+) -> Element<'_, Message> {
+    let ranks = rank.band();
+    let files = file.stack();
+    Column::with_children(files.iter().map(|&d_file| {
+        Row::with_children(ranks.iter().map(|&d_rank| {
             let position = Position {
-                rank: (x as u8).try_into().expect("change the iterators"),
-                file: (y as u8).try_into().expect("change the iterators"),
+                rank: d_rank,
+                file: d_file,
             };
 
             match grid.get(position) {
-                Some(number) => text(number.to_string())
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .size(30.0)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-                    .into(),
-                None => button("")
-                    .on_press(Message::SudokuButtonClicked(position))
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .style(style_button)
-                    .into(),
+                Some(number) => {
+                    let mut t = text(number.to_string())
+                        .width(Length::Fixed(CELL_SIZE))
+                        .height(Length::Fixed(CELL_SIZE))
+                        .size(30.0)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center);
+
+                    if let Some(highlight_position) = highlight_position
+                        && highlight_position == position
+                    {}
+
+                    t.into()
+                }
+                None => {
+                    let mut button = button("")
+                        .width(Length::Fixed(CELL_SIZE))
+                        .height(Length::Fixed(CELL_SIZE))
+                        .style(style_button);
+
+                    if let GridInteraction::Interactive = grid_interaction {
+                        button = button.on_press(Message::SudokuButtonClicked(position));
+                    }
+
+                    button.into()
+                }
             }
         }))
         .spacing(CELL_SPACING)
@@ -796,6 +971,7 @@ fn style_button(theme: &Theme, status: button::Status) -> Style {
 }
 
 fn number_selection(g: &GameState) -> Element<'_, Message> {
+    // TODO: use Number::All in a for loop.
     let one = number_to_radio(g.selected_number, Number::One);
     let two = number_to_radio(g.selected_number, Number::Two);
     let three = number_to_radio(g.selected_number, Number::Three);
