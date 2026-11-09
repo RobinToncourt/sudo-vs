@@ -34,26 +34,21 @@ const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
 const SQUARE_SPACING: f32 = 10.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum LobbyInfo {
     None,
     PeerDisconnectedDuringConnection,
     ConnectionClosed,
     AnErrorOccurred,
 }
-impl Display for LobbyInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::None => "",
-                Self::PeerDisconnectedDuringConnection =>
-                    "The peer disconnected during connection.",
-                Self::ConnectionClosed => "The connection was closed.",
-                Self::AnErrorOccurred => "An error occurred.",
-            }
-        )
+impl LobbyInfo {
+    fn to_str(self, loc: Localization) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::PeerDisconnectedDuringConnection => loc.peer_disconnected_during_connection(),
+            Self::ConnectionClosed => loc.connection_closed(),
+            Self::AnErrorOccurred => loc.an_error_occurred(),
+        }
     }
 }
 
@@ -75,19 +70,15 @@ enum GameOverInfo {
     OpponentDisconnected,
     ConnectionClosed,
 }
-impl Display for GameOverInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Finished => "The game is finished.",
-                Self::PlayerForfeit => "You forfeited.",
-                Self::OpponentForfeit => "Your opponent forfeited.",
-                Self::OpponentDisconnected => "Your opponent disconnected.",
-                Self::ConnectionClosed => "The connection closed.",
-            }
-        )
+impl GameOverInfo {
+    fn to_str(self, loc: Localization) -> &'static str {
+        match self {
+            Self::Finished => loc.game_finished(),
+            Self::PlayerForfeit => loc.player_forfeit(),
+            Self::OpponentForfeit => loc.opponent_forfeit(),
+            Self::OpponentDisconnected => loc.opponent_disconnected(),
+            Self::ConnectionClosed => loc.connection_closed(),
+        }
     }
 }
 
@@ -131,7 +122,7 @@ impl Display for State {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
 enum Localization {
     En,
     Fr,
@@ -150,6 +141,127 @@ impl Display for Localization {
 }
 impl Localization {
     const ALL: &[Self] = &[Self::En, Self::Fr];
+
+    fn nickname(self) -> &'static str {
+        match self {
+            Self::En => "Nickname: ",
+            Self::Fr => "Pseudonyme: ",
+        }
+    }
+    fn nickname_placeholder(self) -> &'static str {
+        match self {
+            Self::En => "Enter your nickname",
+            Self::Fr => "Entrez votre pseudonyme",
+        }
+    }
+    fn lobby(self) -> &'static str {
+        match self {
+            Self::En => "Lobby: ",
+            Self::Fr => "Salon: ",
+        }
+    }
+    fn lobby_placeholder(self) -> &'static str {
+        match self {
+            Self::En => "Lobby name",
+            Self::Fr => "Nom du salon",
+        }
+    }
+    fn peer_disconnected_during_connection(self) -> &'static str {
+        match self {
+            Self::En => "The peer disconnected during connection.",
+            Self::Fr => "Le pair s'est deconnecté pendant la connexion.",
+        }
+    }
+    fn signaling_server_url(self) -> &'static str {
+        "Signaling server URL: "
+    }
+    fn signaling_server_url_placeholder(self) -> &'static str {
+        "Signaling server URL"
+    }
+    fn join(self) -> &'static str {
+        match self {
+            Self::En => "Join",
+            Self::Fr => "Joindre",
+        }
+    }
+    fn waiting_connection(self) -> &'static str {
+        match self {
+            Self::En => "Connecting / Waiting for someone to connect...",
+            Self::Fr => "Connexion / En attente de connexion...",
+        }
+    }
+    fn cancel(self) -> &'static str {
+        match self {
+            Self::En => "Cancel",
+            Self::Fr => "Annuler",
+        }
+    }
+    fn forfeit(self) -> &'static str {
+        match self {
+            Self::En => "Forfeit",
+            Self::Fr => "Abandonner",
+        }
+    }
+    fn draw(self) -> &'static str {
+        match self {
+            Self::En => "Draw.",
+            Self::Fr => "Égalité.",
+        }
+    }
+    fn player_lost(self) -> &'static str {
+        match self {
+            Self::En => "You lost.",
+            Self::Fr => "Vous avez perdu.",
+        }
+    }
+    fn player_win(self) -> &'static str {
+        match self {
+            Self::En => "You won.",
+            Self::Fr => "Vous avez gagné.",
+        }
+    }
+    fn player_forfeit(self) -> &'static str {
+        match self {
+            Self::En => "You forfeited.",
+            Self::Fr => "Vous avez abandonné.",
+        }
+    }
+    fn opponent_forfeit(self) -> &'static str {
+        match self {
+            Self::En => "Your opponent forfeited.",
+            Self::Fr => "Votre adversaire a abandonné.",
+        }
+    }
+    fn opponent_disconnected(self) -> &'static str {
+        match self {
+            Self::En => "Your opponent disconnected.",
+            Self::Fr => "Votre adversaire s'est deconnecté.",
+        }
+    }
+    fn connection_closed(self) -> &'static str {
+        match self {
+            Self::En => "The connection closed.",
+            Self::Fr => "La connexion a été interrompu",
+        }
+    }
+    fn game_finished(self) -> &'static str {
+        match self {
+            Self::En => "The game is finished.",
+            Self::Fr => "La partie est terminé.",
+        }
+    }
+    fn return_to_lobby(self) -> &'static str {
+        match self {
+            Self::En => "Return to lobby.",
+            Self::Fr => "Retourner au salon.",
+        }
+    }
+    fn an_error_occurred(self) -> &'static str {
+        match self {
+            Self::En => "An error occurred.",
+            Self::Fr => "Une erreur est survenu.",
+        }
+    }
 }
 
 struct App {
@@ -641,10 +753,10 @@ fn view(app: &App) -> Element<'_, Message> {
             let nickname = &app.nickname;
             let lobby_name = &app.lobby_name;
             let signaling_server_url = &app.signaling_server_url;
-            view_selecting_lobby(info, nickname, lobby_name, signaling_server_url)
+            view_selecting_lobby(app.localization, info, nickname, lobby_name, signaling_server_url)
         }
         State::WaitingForSocket | State::WaitingForPeer { .. } | State::Handshaking { .. } => {
-            view_connecting()
+            view_connecting(app.localization)
         }
         State::Game(g) => view_game(&app.nickname, g),
         State::GameOver {
@@ -653,7 +765,7 @@ fn view(app: &App) -> Element<'_, Message> {
             game,
             last_placement,
             ..
-        } => view_game_over(*info, *is_playing_first, game, *last_placement),
+        } => view_game_over(app.localization, *info, *is_playing_first, game, *last_placement),
     };
 
     col![
@@ -706,6 +818,7 @@ fn language_menu(app: &App) -> Element<'_, Message> {
 }
 
 fn view_selecting_lobby<'a>(
+    localization: Localization,
     info: &LobbyInfo,
     nickname: &'a str,
     lobby_name: &'a str,
@@ -714,7 +827,7 @@ fn view_selecting_lobby<'a>(
     container(
         col![
             // Info.
-            text(info.to_string()),
+            text(info.to_str(localization)),
             // Nickname.
             row![
                 space().width(Length::Fill),
@@ -754,7 +867,7 @@ fn view_selecting_lobby<'a>(
             ]
             .align_y(Alignment::Center),
             // Join button.
-            button("Join")
+            button(localization.join())
                 .on_press_maybe(can_join_lobby(nickname, lobby_name).then_some(Message::JoinLobby))
         ]
         .spacing(10)
@@ -770,11 +883,11 @@ fn can_join_lobby(nickname: &str, lobby_name: &str) -> bool {
     !nickname.is_empty() && !lobby_name.is_empty() && is_all_alphanumeric
 }
 
-fn view_connecting() -> Element<'static, Message> {
+fn view_connecting(localization: Localization) -> Element<'static, Message> {
     container(
         col![
-            text("Connecting / Waiting for someone to connect...").size(40),
-            button("Cancel").on_press(Message::CancelConnection),
+            text(localization.waiting_connection()).size(40),
+            button(localization.cancel()).on_press(Message::CancelConnection),
         ]
         .align_x(Alignment::Center),
     )
@@ -800,6 +913,7 @@ fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
 }
 
 fn view_game_over(
+    localization: Localization,
     info: GameOverInfo,
     is_player_first: bool,
     g: &Game,
@@ -817,7 +931,7 @@ fn view_game_over(
             }
             None => "Finished".to_string(),
         },
-        _ => info.to_string(),
+        _ => info.to_str(localization).to_string(),
     };
     container(
         col![
