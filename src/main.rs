@@ -12,14 +12,14 @@ use iced::{
     futures::{FutureExt, SinkExt, StreamExt, channel::mpsc, select},
     stream,
     widget::{
-        Column, Row, button, button::Style, column as col, container, radio, row, space, text,
-        text_input,
+        Column, Row, button, button::Style, column as col, container, radio, row, scrollable,
+        space, text, text_input,
     },
 };
 use iced_aw::DropDown;
 
 use futures_timer::Delay;
-use iced::widget::scrollable;
+
 use log::debug;
 
 use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
@@ -172,9 +172,11 @@ impl Localization {
             Self::Fr => "Le pair s'est deconnecté pendant la connexion.",
         }
     }
+    #[allow(clippy::unused_self)]
     fn signaling_server_url(self) -> &'static str {
         "Signaling server URL: "
     }
+    #[allow(clippy::unused_self)]
     fn signaling_server_url_placeholder(self) -> &'static str {
         "Signaling server URL"
     }
@@ -281,11 +283,10 @@ impl Default for App {
             theme_expanded: false,
             localization: Localization::En,
             localization_expanded: false,
-            nickname: String::from("Bob"),
-            lobby_name: String::from("test"),
+            nickname: String::new(),
+            lobby_name: String::new(),
             signaling_server_url: String::from(
-                // "wss://web-socket-signaling-server.onrender.com/<lobby_name>",
-                "ws://localhost:3536/<lobby_name>",
+                "wss://web-socket-signaling-server.onrender.com/<lobby_name>",
             ),
             state: State::SelectingLobby {
                 info: LobbyInfo::None,
@@ -328,7 +329,7 @@ impl Display for Message {
                 Self::ThemeExpand => "Theme Expand",
                 Self::SelectedTheme(_) => "Selected Theme",
                 Self::LocalizationExpand => "Localization Expand",
-                Self::SelectedLocalization(_) => "Localization Expand",
+                Self::SelectedLocalization(_) => "Selected Localization",
                 Self::WebSocketEvent(_) => "WebSocketEvent",
                 Self::InputNickname(_) => "InputNickname",
                 Self::InputLobbyName(_) => "InputLobbyName",
@@ -388,6 +389,7 @@ fn theme(app: &App) -> Theme {
     app.theme.clone()
 }
 
+#[allow(clippy::too_many_lines)]
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match (&mut app.state, message) {
         /*
@@ -412,17 +414,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
          * SelectingLobby.
          */
         (State::SelectingLobby { .. }, Message::InputNickname(new_nickname)) => {
-            app.nickname = new_nickname
+            app.nickname = new_nickname;
         }
         (State::SelectingLobby { .. }, Message::InputLobbyName(new_lobby_name)) => {
-            app.lobby_name = new_lobby_name
+            app.lobby_name = new_lobby_name;
         }
         (State::SelectingLobby { .. }, Message::InputSignalingServer(new_signaling_server)) => {
-            app.signaling_server_url = new_signaling_server
+            app.signaling_server_url = new_signaling_server;
         }
         (State::SelectingLobby { .. }, Message::JoinLobby) => {
             debug!("WaitingForSocket");
-            app.state = State::WaitingForSocket
+            app.state = State::WaitingForSocket;
         }
         /*
          * WaitingForSocket.
@@ -669,12 +671,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 fn game_place_number(g: &mut GameState, placement: Placement) -> Task<Message> {
     let outcome = g.game.place_number(placement);
     match outcome {
-        Ok(outcome) => match outcome {
-            Outcome::Continue => Task::none(),
-            Outcome::Finished(_) => Task::done(Message::GameOver),
-        },
-        Err(PlaceError::CellNotEmpty) => Task::none(),
-        Err(PlaceError::GameAlreadyOver) => Task::none(),
+        Ok(Outcome::Finished(_)) => Task::done(Message::GameOver),
+        Ok(Outcome::Continue) | Err(PlaceError::CellNotEmpty | PlaceError::GameAlreadyOver) => {
+            Task::none()
+        }
     }
 }
 
@@ -753,25 +753,34 @@ fn view(app: &App) -> Element<'_, Message> {
             let nickname = &app.nickname;
             let lobby_name = &app.lobby_name;
             let signaling_server_url = &app.signaling_server_url;
-            view_selecting_lobby(app.localization, info, nickname, lobby_name, signaling_server_url)
+            view_selecting_lobby(
+                app.localization,
+                *info,
+                nickname,
+                lobby_name,
+                signaling_server_url,
+            )
         }
         State::WaitingForSocket | State::WaitingForPeer { .. } | State::Handshaking { .. } => {
             view_connecting(app.localization)
         }
-        State::Game(g) => view_game(&app.nickname, g),
+        State::Game(g) => view_game(app.localization, &app.nickname, g),
         State::GameOver {
             info,
             is_playing_first,
             game,
             last_placement,
             ..
-        } => view_game_over(app.localization, *info, *is_playing_first, game, *last_placement),
+        } => view_game_over(
+            app.localization,
+            *info,
+            *is_playing_first,
+            game,
+            *last_placement,
+        ),
     };
 
-    col![
-        top_bar,
-        main_element,
-    ].into()
+    col![top_bar, main_element,].into()
 }
 
 fn top_bar(app: &App) -> Element<'_, Message> {
@@ -806,7 +815,10 @@ fn language_menu(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center);
     let options = Column::with_children(Localization::ALL.iter().map(|localization| {
         Row::new()
-            .push(button(text(localization.to_string())).on_press(Message::SelectedLocalization(localization.clone())))
+            .push(
+                button(text(localization.to_string()))
+                    .on_press(Message::SelectedLocalization(*localization)),
+            )
             .spacing(6)
             .align_y(Alignment::Center)
             .into()
@@ -818,8 +830,8 @@ fn language_menu(app: &App) -> Element<'_, Message> {
 }
 
 fn view_selecting_lobby<'a>(
-    localization: Localization,
-    info: &LobbyInfo,
+    loc: Localization,
+    info: LobbyInfo,
     nickname: &'a str,
     lobby_name: &'a str,
     signaling_server_url: &'a str,
@@ -827,14 +839,14 @@ fn view_selecting_lobby<'a>(
     container(
         col![
             // Info.
-            text(info.to_str(localization)),
+            text(info.to_str(loc)),
             // Nickname.
             row![
                 space().width(Length::Fill),
-                text("Nickname: ")
+                text(loc.nickname())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input("Enter your nickname", nickname)
+                text_input(loc.nickname_placeholder(), nickname)
                     .on_input(Message::InputNickname)
                     .width(Length::Fill),
                 space().width(Length::Fill),
@@ -843,10 +855,10 @@ fn view_selecting_lobby<'a>(
             // Lobby name.
             row![
                 space().width(Length::Fill),
-                text("Lobby: ")
+                text(loc.lobby())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input("Lobby name", lobby_name)
+                text_input(loc.lobby_placeholder(), lobby_name)
                     .on_input(Message::InputLobbyName)
                     .width(Length::Fill),
                 space().width(Length::Fill),
@@ -857,17 +869,17 @@ fn view_selecting_lobby<'a>(
             // TODO: toggle hide/reveal the text_input.
             row![
                 space().width(Length::Fill),
-                text("Signaling server URL: ")
+                text(loc.signaling_server_url())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input("Signaling server URL", signaling_server_url)
+                text_input(loc.signaling_server_url_placeholder(), signaling_server_url)
                     .on_input(Message::InputSignalingServer)
                     .width(Length::Fill),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
             // Join button.
-            button(localization.join())
+            button(loc.join())
                 .on_press_maybe(can_join_lobby(nickname, lobby_name).then_some(Message::JoinLobby))
         ]
         .spacing(10)
@@ -896,13 +908,13 @@ fn view_connecting(localization: Localization) -> Element<'static, Message> {
     .into()
 }
 
-fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
+fn view_game<'a>(loc: Localization, nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
     container(
         col![
             player_turn(nickname, g),
             show_grid(&g.game, GridInteraction::Interactive, g.last_placement),
             number_selection(g),
-            button("Forfeit").on_press(Message::Forfeit),
+            button(loc.forfeit()).on_press(Message::Forfeit),
         ]
         .align_x(Alignment::Center)
         .spacing(10),
@@ -913,7 +925,7 @@ fn view_game<'a>(nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
 }
 
 fn view_game_over(
-    localization: Localization,
+    loc: Localization,
     info: GameOverInfo,
     is_player_first: bool,
     g: &Game,
@@ -921,24 +933,24 @@ fn view_game_over(
 ) -> Element<'_, Message> {
     let end_text = match info {
         GameOverInfo::Finished => match g.result() {
-            Some(GameResult::Draw) => "Draw".to_string(),
+            Some(GameResult::Draw) => loc.draw(),
             Some(GameResult::Loss { loser, .. }) => {
                 if is_player_self(is_player_first, loser) {
-                    "You lost.".to_string()
+                    loc.player_lost()
                 } else {
-                    "You won.".to_string()
+                    loc.player_win()
                 }
             }
-            None => "Finished".to_string(),
+            None => loc.game_finished(),
         },
-        _ => info.to_str(localization).to_string(),
+        _ => info.to_str(loc),
     };
     container(
         col![
             text(end_text),
             show_grid(g, GridInteraction::None, last_placement),
             // TODO: button to save history.
-            button("Return to lobby").on_press(Message::ReturnToLobby),
+            button(loc.return_to_lobby()).on_press(Message::ReturnToLobby),
         ]
         .align_x(Alignment::Center)
         .spacing(10),
@@ -981,10 +993,6 @@ fn is_player_self(is_playing_first: bool, player: Player) -> bool {
     }
 }
 
-fn is_player_opponent(is_playing_first: bool, player: Player) -> bool {
-    !is_player_self(is_playing_first, player)
-}
-
 #[derive(Debug, Clone, Copy)]
 enum GridInteraction {
     Interactive,
@@ -1021,38 +1029,32 @@ fn show_square(
     let files = file.stack();
     Column::with_children(files.iter().map(|&d_file| {
         Row::with_children(ranks.iter().map(|&d_rank| {
-            let position = Position {
-                rank: d_rank,
-                file: d_file,
-            };
+            let position = Position::new(d_rank, d_file);
 
-            match grid.get(position) {
-                Some(number) => {
-                    let mut t = text(number.to_string())
-                        .width(Length::Fixed(CELL_SIZE))
-                        .height(Length::Fixed(CELL_SIZE))
-                        .size(30.0)
-                        .align_x(Alignment::Center)
-                        .align_y(Alignment::Center);
+            if let Some(number) = grid.get(position) {
+                let t = text(number.to_string())
+                    .width(Length::Fixed(CELL_SIZE))
+                    .height(Length::Fixed(CELL_SIZE))
+                    .size(30.0)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center);
 
-                    if let Some(highlight_position) = highlight_position
-                        && highlight_position == position
-                    {}
+                if let Some(highlight_position) = highlight_position
+                    && highlight_position == position
+                {}
 
-                    t.into()
+                t.into()
+            } else {
+                let mut button = button("")
+                    .width(Length::Fixed(CELL_SIZE))
+                    .height(Length::Fixed(CELL_SIZE))
+                    .style(style_button);
+
+                if let GridInteraction::Interactive = grid_interaction {
+                    button = button.on_press(Message::SudokuButtonClicked(position));
                 }
-                None => {
-                    let mut button = button("")
-                        .width(Length::Fixed(CELL_SIZE))
-                        .height(Length::Fixed(CELL_SIZE))
-                        .style(style_button);
 
-                    if let GridInteraction::Interactive = grid_interaction {
-                        button = button.on_press(Message::SudokuButtonClicked(position));
-                    }
-
-                    button.into()
-                }
+                button.into()
             }
         }))
         .spacing(CELL_SPACING)

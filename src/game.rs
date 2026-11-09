@@ -86,7 +86,7 @@ impl Rank {
     ];
     /// One => 0, Two => 1, ..., Nine => 8.
     #[must_use]
-    pub fn index(&self) -> usize {
+    pub fn index(self) -> usize {
         match self {
             Rank::One => 0,
             Rank::Two => 1,
@@ -430,11 +430,11 @@ impl Placement {
         Self { position, number }
     }
     #[must_use]
-    pub const fn position(&self) -> Position {
+    pub const fn position(self) -> Position {
         self.position
     }
     #[must_use]
-    pub const fn number(&self) -> Number {
+    pub const fn number(self) -> Number {
         self.number
     }
 }
