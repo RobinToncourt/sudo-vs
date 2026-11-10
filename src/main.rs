@@ -27,12 +27,14 @@ use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
 use serde::{Deserialize, Serialize};
 
 use crate::game::{
-    File, Game, GameResult, Grid, Number, Outcome, PlaceError, Placement, Player, Position, Rank,
+    File, Game, GameResult, Grid, LossReason, Number, Outcome, PlaceError, Placement, Player,
+    Position, Rank, RuleViolation,
 };
 
 const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
 const SQUARE_SPACING: f32 = 10.0;
+const LAST_POSITION_COLOR: Color = Color::from_rgb(0.984_313_7, 0.749_019_6, 0.141_176_48);
 
 #[derive(Debug, Clone, Copy)]
 enum LobbyInfo {
@@ -287,7 +289,7 @@ impl Default for App {
             lobby_name: String::new(),
             signaling_server_url: String::from(
                 "wss://web-socket-signaling-server.onrender.com/<lobby_name>",
-            ),
+            ), // ws://localhost:3536
             state: State::SelectingLobby {
                 info: LobbyInfo::None,
             },
@@ -583,8 +585,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 
             match postcard::from_bytes(&packet) {
                 Ok(PlayerAction::NumberPlacement(placement)) => {
-                    g.last_placement = Some(placement.position());
-                    return game_place_number(g, placement);
+                    if is_opponent_turn(g.is_playing_first, g.game.active_player()) {
+                        g.last_placement = Some(placement.position());
+                        return game_place_number(g, placement);
+                    }
+                    debug!("Opponent tried to play not during it's turn.");
                 }
                 Ok(PlayerAction::Forfeit) => {
                     debug!("GameOver");
@@ -611,9 +616,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     Ok(bytes) => {
                         if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
                             debug!("Failed to queue move: {e}");
-                        } else {
+                        } else if is_player_turn(g.is_playing_first, g.game.active_player()) {
                             g.last_placement = Some(placement.position());
                             return game_place_number(g, placement);
+                        } else {
+                            debug!("Player tried to play not during it's turn.");
                         }
                     }
                     Err(e) => debug!("Failed to serialize move: {e}"),
@@ -912,7 +919,11 @@ fn view_game<'a>(loc: Localization, nickname: &'a str, g: &'a GameState) -> Elem
     container(
         col![
             player_turn(nickname, g),
-            show_grid(&g.game, GridInteraction::Interactive, g.last_placement),
+            show_grid(
+                &g.game,
+                GridInteraction::Interactive,
+                &option_to_vec(g.last_placement)
+            ),
             number_selection(g),
             button(loc.forfeit()).on_press(Message::Forfeit),
         ]
@@ -931,24 +942,49 @@ fn view_game_over(
     g: &Game,
     last_placement: Option<Position>,
 ) -> Element<'_, Message> {
-    let end_text = match info {
+    let mut end_text = String::new();
+    let mut highlight_positions = Vec::new();
+    match info {
         GameOverInfo::Finished => match g.result() {
-            Some(GameResult::Draw) => loc.draw(),
-            Some(GameResult::Loss { loser, .. }) => {
-                if is_player_self(is_player_first, loser) {
-                    loc.player_lost()
+            Some(GameResult::Draw) => {
+                end_text.push_str(loc.draw());
+            }
+            Some(GameResult::Loss {
+                loser,
+                reason: LossReason::RuleViolation(RuleViolation { conflicting, .. }),
+            }) => {
+                if is_player_turn(is_player_first, loser) {
+                    end_text.push_str(loc.player_lost());
                 } else {
-                    loc.player_win()
+                    end_text.push_str(loc.player_win());
+                }
+                highlight_positions.push(conflicting);
+                if let Some(position) = last_placement {
+                    highlight_positions.push(position);
                 }
             }
-            None => loc.game_finished(),
+            Some(GameResult::Loss {
+                loser,
+                reason: LossReason::NoValidPositions,
+            }) => {
+                if is_player_turn(is_player_first, loser) {
+                    end_text.push_str(loc.player_lost());
+                } else {
+                    end_text.push_str(loc.player_win());
+                }
+            }
+            None => {
+                end_text.push_str(loc.game_finished());
+            }
         },
-        _ => info.to_str(loc),
+        _ => {
+            end_text.push_str(info.to_str(loc));
+        }
     };
     container(
         col![
             text(end_text),
-            show_grid(g, GridInteraction::None, last_placement),
+            show_grid(g, GridInteraction::None, &highlight_positions),
             // TODO: button to save history.
             button(loc.return_to_lobby()).on_press(Message::ReturnToLobby),
         ]
@@ -958,6 +994,14 @@ fn view_game_over(
     .center_x(Length::Fill)
     .center_y(Length::Fill)
     .into()
+}
+
+fn option_to_vec<T>(opt: Option<T>) -> Vec<T> {
+    let mut result = Vec::new();
+    if let Some(opt) = opt {
+        result.push(opt);
+    }
+    result
 }
 
 fn player_turn<'a>(nickname: &'a str, g: &GameState) -> Element<'a, Message> {
@@ -979,18 +1023,22 @@ fn player_to_name<'a>(
     is_playing_first: bool,
     player: Player,
 ) -> &'a str {
-    if is_player_self(is_playing_first, player) {
+    if is_player_turn(is_playing_first, player) {
         nickname
     } else {
         opponent_nickname
     }
 }
 
-fn is_player_self(is_playing_first: bool, player: Player) -> bool {
+fn is_player_turn(is_playing_first: bool, player: Player) -> bool {
     match (is_playing_first, player) {
         (true, Player::Player1) | (false, Player::Player2) => true,
         (false, Player::Player1) | (true, Player::Player2) => false,
     }
+}
+
+fn is_opponent_turn(is_playing_first: bool, player: Player) -> bool {
+    !is_player_turn(is_playing_first, player)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -999,11 +1047,11 @@ enum GridInteraction {
     None,
 }
 
-fn show_grid(
-    g: &Game,
+fn show_grid<'g>(
+    g: &'g Game,
     grid_interaction: GridInteraction,
-    highlight_position: Option<Position>,
-) -> Element<'_, Message> {
+    highlight_position: &[Position],
+) -> Element<'g, Message> {
     let grid = g.grid();
 
     Column::with_children([File::A, File::D, File::G].map(|file| {
@@ -1018,13 +1066,13 @@ fn show_grid(
     .into()
 }
 
-fn show_square(
-    grid: &Grid,
+fn show_square<'g>(
+    grid: &'g Grid,
     rank: Rank,
     file: File,
     grid_interaction: GridInteraction,
-    highlight_position: Option<Position>,
-) -> Element<'_, Message> {
+    highlight_position: &[Position],
+) -> Element<'g, Message> {
     let ranks = rank.band();
     let files = file.stack();
     Column::with_children(files.iter().map(|&d_file| {
@@ -1039,11 +1087,16 @@ fn show_square(
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center);
 
-                if let Some(highlight_position) = highlight_position
-                    && highlight_position == position
-                {}
-
-                t.into()
+                if highlight_position.contains(&position) {
+                    container(t)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(LAST_POSITION_COLOR.into()),
+                            ..container::Style::default()
+                        })
+                        .into()
+                } else {
+                    t.into()
+                }
             } else {
                 let mut button = button("")
                     .width(Length::Fixed(CELL_SIZE))

@@ -54,15 +54,15 @@ impl TryFrom<u8> for Rank {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Rank::One),
-            1 => Ok(Rank::Two),
-            2 => Ok(Rank::Three),
-            3 => Ok(Rank::Four),
-            4 => Ok(Rank::Five),
-            5 => Ok(Rank::Six),
-            6 => Ok(Rank::Seven),
-            7 => Ok(Rank::Eight),
-            8 => Ok(Rank::Nine),
+            1 => Ok(Rank::One),
+            2 => Ok(Rank::Two),
+            3 => Ok(Rank::Three),
+            4 => Ok(Rank::Four),
+            5 => Ok(Rank::Five),
+            6 => Ok(Rank::Six),
+            7 => Ok(Rank::Seven),
+            8 => Ok(Rank::Eight),
+            9 => Ok(Rank::Nine),
             _ => Err(InvalidConversion),
         }
     }
@@ -139,15 +139,15 @@ impl TryFrom<u8> for File {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(File::A),
-            1 => Ok(File::B),
-            2 => Ok(File::C),
-            3 => Ok(File::D),
-            4 => Ok(File::E),
-            5 => Ok(File::F),
-            6 => Ok(File::G),
-            7 => Ok(File::H),
-            8 => Ok(File::I),
+            1 => Ok(File::A),
+            2 => Ok(File::B),
+            3 => Ok(File::C),
+            4 => Ok(File::D),
+            5 => Ok(File::E),
+            6 => Ok(File::F),
+            7 => Ok(File::G),
+            8 => Ok(File::H),
+            9 => Ok(File::I),
             _ => Err(InvalidConversion),
         }
     }
@@ -547,6 +547,8 @@ impl Game {
                 loser: player,
                 reason: LossReason::RuleViolation(rule_violation),
             };
+            self.grid.cells[rank as usize][file as usize] = Some(number);
+
             self.result = Some(game_result);
             return Ok(Outcome::Finished(game_result));
         }
@@ -841,15 +843,6 @@ mod game_tests {
         let expected = History { history };
         assert_eq!(History::from_str(s).unwrap(), expected);
     }
-
-    #[test]
-    fn test_place_number_already_in_rank() {}
-
-    #[test]
-    fn test_place_number_already_in_file() {}
-
-    #[test]
-    fn test_place_number_already_in_square() {}
 
     #[test]
     fn test_place_number_error_cell_not_empty() {
