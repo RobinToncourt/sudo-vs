@@ -730,15 +730,18 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
                     },
                     () = Delay::new(Duration::from_millis(30)).fuse() => {
                         if let Ok(changes) = socket.try_update_peers() {
-                            let socket_peer_id = socket.id().expect("CAN IT FAILS AT THIS POINT ?");
                             for (peer, state) in changes {
-                                let _ = out.send(match state {
-                                    PeerState::Connected => WebSocketEvent::PeerConnected {
-                                        me: socket_peer_id,
-                                        peer,
+                                let event = match state {
+                                    PeerState::Connected => match socket.id() {
+                                        Some(me) => WebSocketEvent::PeerConnected { me, peer },
+                                        None => {
+                                            debug!("Peer connected but local id is not assigned yet.");
+                                            continue;
+                                        }
                                     },
                                     PeerState::Disconnected => WebSocketEvent::PeerDisconnected(peer),
-                                }).await;
+                                };
+                                let _ = out.send(event).await;
                             }
                         }
                         for (peer, packet) in socket.channel_mut(0).receive() {
