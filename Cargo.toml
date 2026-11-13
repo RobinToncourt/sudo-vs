@@ -26,3 +26,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Log error for WASM build on WEB browser.
 console_error_panic_hook = "0.1"
 console_log = "1"
+web-time = "1"

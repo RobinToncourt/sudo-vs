@@ -1,10 +1,16 @@
 use std::{
     error::Error,
-    fmt::{self, Display},
+    fmt::{
+        self,
+        Display, //
+    },
     str::FromStr,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize, //
+};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Player {
@@ -314,6 +320,7 @@ pub struct RuleViolation {
     pub conflicting: Position,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
     NumberAlreadyInRank,
@@ -432,10 +439,6 @@ impl Placement {
     #[must_use]
     pub const fn position(self) -> Position {
         self.position
-    }
-    #[must_use]
-    pub const fn number(self) -> Number {
-        self.number
     }
 }
 impl Display for Placement {
@@ -602,8 +605,12 @@ impl Game {
         self.result
     }
     #[must_use]
-    pub fn history(&self) -> &History {
+    pub fn _history(&self) -> &History {
         &self.history
+    }
+    #[must_use]
+    pub fn ply(&self) -> usize {
+        self.history.history.len()
     }
 }
 

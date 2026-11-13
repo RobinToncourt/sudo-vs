@@ -1,44 +1,74 @@
 #![deny(clippy::unwrap_used)]
 
+mod clock;
 mod game;
+mod update;
+mod view;
 
 use std::{
-    fmt::{self, Display},
-    time::Duration,
+    fmt::{
+        self,
+        Display, //
+    },
+    time::{
+        Duration,
+        Instant, //
+    },
 };
 
 use iced::{
-    Alignment, Color, Element, Length, Subscription, Task, Theme,
-    futures::{FutureExt, SinkExt, StreamExt, channel::mpsc, select},
-    stream,
-    widget::{
-        Column, Row, button, button::Style, column as col, container, radio, row, scrollable,
-        space, text, text_input,
+    Color,
+    Subscription,
+    Theme,
+    futures::{
+        FutureExt,
+        SinkExt,
+        StreamExt,
+        channel::mpsc,
+        select, //
     },
+    stream, //
 };
-use iced_aw::DropDown;
 
 use futures_timer::Delay;
 
 use log::debug;
 
-use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
-
-use serde::{Deserialize, Serialize};
-
-use crate::game::{
-    File, Game, GameResult, Grid, LossReason, Number, Outcome, PlaceError, Placement, Player,
-    Position, Rank, RuleViolation,
+use matchbox_socket::{
+    PeerId,
+    PeerState,
+    WebRtcSocket, //
 };
+
+use serde::{
+    Deserialize,
+    Serialize, //
+};
+
+use crate::{
+    clock::Clock,
+    game::{
+        Game,
+        Number,
+        Placement,
+        Player,
+        Position, //
+    },
+    update::update,
+    view::view,
+};
+
+const PROTOCOL_VERSION: u16 = 1;
 
 const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
 const SQUARE_SPACING: f32 = 10.0;
-const LAST_POSITION_COLOR: Color = Color::from_rgb(0.984_313_7, 0.749_019_6, 0.141_176_48);
+const LAST_POSITION_COLOR: Color = Color::from_rgb(0.984_313, 0.749_019, 0.141_176);
 
 #[derive(Debug, Clone, Copy)]
 enum LobbyInfo {
     None,
+    IncompatibleVersion,
     PeerDisconnectedDuringConnection,
     ConnectionClosed,
     AnErrorOccurred,
@@ -47,6 +77,7 @@ impl LobbyInfo {
     fn to_str(self, loc: Localization) -> &'static str {
         match self {
             Self::None => "",
+            Self::IncompatibleVersion => loc.incompatible_version(),
             Self::PeerDisconnectedDuringConnection => loc.peer_disconnected_during_connection(),
             Self::ConnectionClosed => loc.connection_closed(),
             Self::AnErrorOccurred => loc.an_error_occurred(),
@@ -58,6 +89,8 @@ struct GameState {
     is_playing_first: bool,
     opponent_peer_id: PeerId,
     opponent_nickname: String,
+    now: Instant,
+    clock: Clock,
     game: Game,
     last_placement: Option<Position>,
     selected_number: Option<Number>,
@@ -69,6 +102,9 @@ enum GameOverInfo {
     Finished,
     PlayerForfeit,
     OpponentForfeit,
+    PlayerTimeout,
+    OpponentTimeout,
+    Desynchronized,
     OpponentDisconnected,
     ConnectionClosed,
 }
@@ -78,6 +114,9 @@ impl GameOverInfo {
             Self::Finished => loc.game_finished(),
             Self::PlayerForfeit => loc.player_forfeit(),
             Self::OpponentForfeit => loc.opponent_forfeit(),
+            Self::PlayerTimeout => loc.player_timeout(),
+            Self::OpponentTimeout => loc.opponent_timeout(),
+            Self::Desynchronized => loc.desynchronized(),
             Self::OpponentDisconnected => loc.opponent_disconnected(),
             Self::ConnectionClosed => loc.connection_closed(),
         }
@@ -168,6 +207,12 @@ impl Localization {
             Self::Fr => "Nom du salon",
         }
     }
+    fn incompatible_version(self) -> &'static str {
+        match self {
+            Self::En => "Incompatible version, update the game.",
+            Self::Fr => "Version incompatible, mettez à jour le jeu.",
+        }
+    }
     fn peer_disconnected_during_connection(self) -> &'static str {
         match self {
             Self::En => "The peer disconnected during connection.",
@@ -234,6 +279,27 @@ impl Localization {
         match self {
             Self::En => "Your opponent forfeited.",
             Self::Fr => "Votre adversaire a abandonné.",
+        }
+    }
+    // PlayerTimeout,
+    // OpponentTimeout,
+    // Desynchronized,
+    fn player_timeout(self) -> &'static str {
+        match self {
+            Self::En => "You lost, timeout.",
+            Self::Fr => "Perdu, plus de temps.",
+        }
+    }
+    fn opponent_timeout(self) -> &'static str {
+        match self {
+            Self::En => "You won, opponent timeout.",
+            Self::Fr => "Gagné, votre adversaire n'a plus de temps.",
+        }
+    }
+    fn desynchronized(self) -> &'static str {
+        match self {
+            Self::En => "Error, clocks desynchronized.",
+            Self::Fr => "Erreur, les horloges sont désynchronisées.",
         }
     }
     fn opponent_disconnected(self) -> &'static str {
@@ -317,6 +383,7 @@ enum Message {
     RadioNumberSelected(Number),
     /// Clicking on a button of the grid.
     SudokuButtonClicked(Position),
+    Tick(Instant),
     Forfeit,
     /// To transition from the `Game` state to the `GameOver` state.
     GameOver,
@@ -340,6 +407,7 @@ impl Display for Message {
                 Self::CancelConnection => "CancelConnection",
                 Self::RadioNumberSelected(_) => "RadioNumberSelected",
                 Self::SudokuButtonClicked(_) => "SudokuButtonClicked",
+                Self::Tick(_) => "Tick",
                 Self::Forfeit => "Forfeit",
                 Self::GameOver => "GameOver",
                 Self::ReturnToLobby => "ReturnToLobby",
@@ -366,9 +434,17 @@ enum Command {
 /// The data that will be exchange between players, represents their action.
 #[derive(Deserialize, Serialize)]
 enum PlayerAction {
-    Nickname(String),
-    NumberPlacement(Placement),
+    Hello {
+        protocol: u16,
+        nickname: String,
+    },
+    NumberPlacement {
+        ply: u16,
+        placement: Placement,
+        remaining_ms: u32,
+    },
     Forfeit,
+    Timeout,
 }
 
 fn main() -> iced::Result {
@@ -391,314 +467,24 @@ fn theme(app: &App) -> Theme {
     app.theme.clone()
 }
 
-#[allow(clippy::too_many_lines)]
-fn update(app: &mut App, message: Message) -> Task<Message> {
-    match (&mut app.state, message) {
-        /*
-         * Theme.
-         */
-        (_, Message::ThemeExpand) => {
-            app.theme_expanded = !app.theme_expanded;
-        }
-        (_, Message::SelectedTheme(theme)) => {
-            app.theme = theme;
-        }
-        /*
-         * Localization.
-         */
-        (_, Message::LocalizationExpand) => {
-            app.localization_expanded = !app.localization_expanded;
-        }
-        (_, Message::SelectedLocalization(localization)) => {
-            app.localization = localization;
-        }
-        /*
-         * SelectingLobby.
-         */
-        (State::SelectingLobby { .. }, Message::InputNickname(new_nickname)) => {
-            app.nickname = new_nickname;
-        }
-        (State::SelectingLobby { .. }, Message::InputLobbyName(new_lobby_name)) => {
-            app.lobby_name = new_lobby_name;
-        }
-        (State::SelectingLobby { .. }, Message::InputSignalingServer(new_signaling_server)) => {
-            app.signaling_server_url = new_signaling_server;
-        }
-        (State::SelectingLobby { .. }, Message::JoinLobby) => {
-            debug!("WaitingForSocket");
-            app.state = State::WaitingForSocket;
-        }
-        /*
-         * WaitingForSocket.
-         */
-        (State::WaitingForSocket, Message::CancelConnection) => {
-            debug!("SelectingLobby");
-            app.state = State::SelectingLobby {
-                info: LobbyInfo::None,
-            }
-        }
-        (State::WaitingForSocket, Message::WebSocketEvent(WebSocketEvent::Ready(sender))) => {
-            debug!("WaitingForPeer");
-            app.state = State::WaitingForPeer { sender };
-        }
-        /*
-         * WaitingForPeer.
-         */
-        (State::WaitingForPeer { .. }, Message::CancelConnection) => {
-            debug!("SelectingLobby");
-            app.state = State::SelectingLobby {
-                info: LobbyInfo::None,
-            }
-        }
-        (
-            State::WaitingForPeer { sender },
-            Message::WebSocketEvent(WebSocketEvent::PeerConnected { me, peer }),
-        ) => {
-            debug!("Sending nickname");
-            match postcard::to_allocvec(&PlayerAction::Nickname(app.nickname.clone())) {
-                Ok(bytes) => {
-                    if let Err(e) = sender.try_send(Command::Broadcast(bytes)) {
-                        debug!("Failed to queue nickname: {e}");
-                        app.state = State::SelectingLobby {
-                            info: LobbyInfo::AnErrorOccurred,
-                        }
-                    } else {
-                        debug!("Nickname queued successfully");
-                        debug!("Handshaking");
-                        app.state = State::Handshaking {
-                            sender: sender.clone(),
-                            me_peer_id: me,
-                            opponent_peer_id: peer,
-                        };
-                    }
-                }
-                Err(e) => {
-                    debug!("Failed to serialize move: {e}");
-                    app.state = State::SelectingLobby {
-                        info: LobbyInfo::AnErrorOccurred,
-                    }
-                }
-            }
-        }
-        /*
-         * Handshaking.
-         */
-        (State::Handshaking { .. }, Message::CancelConnection) => {
-            debug!("SelectingLobby");
-            app.state = State::SelectingLobby {
-                info: LobbyInfo::None,
-            }
-        }
-        (
-            State::Handshaking {
-                opponent_peer_id, ..
-            },
-            Message::WebSocketEvent(WebSocketEvent::PeerDisconnected(peer_id)),
-        ) => {
-            if peer_id == *opponent_peer_id {
-                debug!("Opponent disconnected.");
-                debug!("SelectingLobby");
-                app.state = State::SelectingLobby {
-                    info: LobbyInfo::PeerDisconnectedDuringConnection,
-                };
-            } else {
-                debug!("{peer_id} disconnected");
-            }
-        }
-        (State::Handshaking { .. }, Message::WebSocketEvent(WebSocketEvent::Closed)) => {
-            debug!("SelectingLobby");
-            app.state = State::SelectingLobby {
-                info: LobbyInfo::ConnectionClosed,
-            }
-        }
-        (
-            State::Handshaking {
-                sender,
-                me_peer_id,
-                opponent_peer_id,
-            },
-            Message::WebSocketEvent(WebSocketEvent::Message(packet_peer_id, packet)),
-        ) => {
-            if packet_peer_id != *opponent_peer_id {
-                debug!(
-                    "Received message from another peer. Expected {opponent_peer_id}, got {packet_peer_id}"
-                );
-                return Task::none();
-            }
-
-            match postcard::from_bytes(&packet) {
-                Ok(PlayerAction::Nickname(opponent_nickname)) => {
-                    debug!("Game");
-                    let is_playing_first = me_peer_id > opponent_peer_id;
-                    app.state = State::Game(GameState {
-                        is_playing_first,
-                        opponent_peer_id: *opponent_peer_id,
-                        opponent_nickname,
-                        game: Game::default(),
-                        last_placement: None,
-                        selected_number: None,
-                        sender: sender.clone(),
-                    });
-                }
-                Ok(_) => debug!("Ignoring action while connecting"),
-                Err(e) => debug!("Malformed packet: {e}"),
-            }
-        }
-        /*
-         * Game.
-         */
-        (State::Game(g), Message::WebSocketEvent(WebSocketEvent::PeerDisconnected(peer_id))) => {
-            if peer_id == g.opponent_peer_id {
-                debug!("GameOver");
-                app.state = State::GameOver {
-                    info: GameOverInfo::OpponentDisconnected,
-                    is_playing_first: g.is_playing_first,
-                    game: g.game.clone(),
-                    last_placement: None,
-                    _sender: g.sender.clone(),
-                };
-            } else {
-                debug!("{peer_id} disconnected");
-            }
-        }
-        (State::Game(g), Message::WebSocketEvent(WebSocketEvent::Closed)) => {
-            debug!("GameOver");
-            app.state = State::GameOver {
-                info: GameOverInfo::ConnectionClosed,
-                is_playing_first: g.is_playing_first,
-                game: g.game.clone(),
-                last_placement: None,
-                _sender: g.sender.clone(),
-            }
-        }
-        (
-            State::Game(g),
-            Message::WebSocketEvent(WebSocketEvent::Message(packet_peer_id, packet)),
-        ) => {
-            if packet_peer_id != g.opponent_peer_id {
-                debug!(
-                    "Received message from another peer. Expected {}, got {packet_peer_id}",
-                    g.opponent_peer_id,
-                );
-                return Task::none();
-            }
-
-            match postcard::from_bytes(&packet) {
-                Ok(PlayerAction::NumberPlacement(placement)) => {
-                    if is_opponent_turn(g.is_playing_first, g.game.active_player()) {
-                        g.last_placement = Some(placement.position());
-                        return game_place_number(g, placement);
-                    }
-                    debug!("Opponent tried to play not during it's turn.");
-                }
-                Ok(PlayerAction::Forfeit) => {
-                    debug!("GameOver");
-                    app.state = State::GameOver {
-                        info: GameOverInfo::OpponentForfeit,
-                        is_playing_first: g.is_playing_first,
-                        game: g.game.clone(),
-                        last_placement: g.last_placement,
-                        _sender: g.sender.clone(),
-                    }
-                }
-                Ok(_) => debug!("Ignoring action while in game."),
-                Err(e) => debug!("Malformed packet: {e}"),
-            }
-        }
-        (State::Game(g), Message::RadioNumberSelected(selected_number)) => {
-            g.selected_number = Some(selected_number);
-        }
-        (State::Game(g), Message::SudokuButtonClicked(position)) => {
-            if let Some(selected_number) = g.selected_number {
-                let placement = Placement::new(position, selected_number);
-                let player_action = PlayerAction::NumberPlacement(placement);
-                match postcard::to_allocvec(&player_action) {
-                    Ok(bytes) => {
-                        if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
-                            debug!("Failed to queue move: {e}");
-                        } else if is_player_turn(g.is_playing_first, g.game.active_player()) {
-                            g.last_placement = Some(placement.position());
-                            return game_place_number(g, placement);
-                        } else {
-                            debug!("Player tried to play not during it's turn.");
-                        }
-                    }
-                    Err(e) => debug!("Failed to serialize move: {e}"),
-                }
-            } else {
-                debug!("No selected number.");
-            }
-        }
-        (State::Game(g), Message::Forfeit) => {
-            let player_action = PlayerAction::Forfeit;
-            match postcard::to_allocvec(&player_action) {
-                Ok(bytes) => {
-                    if let Err(e) = g.sender.try_send(Command::Broadcast(bytes)) {
-                        debug!("Failed to queue move: {e}");
-                    } else {
-                        debug!("GameOver");
-                        app.state = State::GameOver {
-                            info: GameOverInfo::PlayerForfeit,
-                            is_playing_first: g.is_playing_first,
-                            game: g.game.clone(),
-                            last_placement: None,
-                            _sender: g.sender.clone(),
-                        };
-                    }
-                }
-                Err(e) => debug!("Failed to serialize move: {e}"),
-            }
-        }
-        (State::Game(g), Message::GameOver) => {
-            debug!("GameOver");
-            app.state = State::GameOver {
-                info: GameOverInfo::Finished,
-                is_playing_first: g.is_playing_first,
-                game: g.game.clone(),
-                last_placement: g.last_placement,
-                _sender: g.sender.clone(),
-            };
-        }
-        /*
-         * GameOver.
-         */
-        (State::GameOver { .. }, Message::ReturnToLobby) => {
-            app.state = State::SelectingLobby {
-                info: LobbyInfo::None,
-            }
-        }
-        /*
-         * Invalid state/message pair.
-         */
-        (state, msg) => debug!("Ignore message({msg}) in current state({state})."),
-    }
-    Task::none()
-}
-
-fn game_place_number(g: &mut GameState, placement: Placement) -> Task<Message> {
-    let outcome = g.game.place_number(placement);
-    match outcome {
-        Ok(Outcome::Finished(_)) => Task::done(Message::GameOver),
-        Ok(Outcome::Continue) | Err(PlaceError::CellNotEmpty | PlaceError::GameAlreadyOver) => {
-            Task::none()
-        }
-    }
-}
-
 fn subscription(app: &App) -> Subscription<Message> {
     match &app.state {
         State::SelectingLobby { .. } => Subscription::none(),
         State::WaitingForSocket
         | State::WaitingForPeer { .. }
         | State::Handshaking { .. }
-        | State::Game(_)
         | State::GameOver { .. } => {
             let room_url = app
                 .signaling_server_url
                 .replace("<lobby_name>", &app.lobby_name);
-            connect(room_url)
+            connect(room_url).map(Message::WebSocketEvent)
         }
-        .map(Message::WebSocketEvent),
+        State::Game(_) => {
+            let room_url = app
+                .signaling_server_url
+                .replace("<lobby_name>", &app.lobby_name);
+            Subscription::batch([connect(room_url).map(Message::WebSocketEvent), ticks()])
+        }
     }
 }
 
@@ -755,282 +541,17 @@ fn connect<S: Into<String>>(room_url: S) -> Subscription<WebSocketEvent> {
     })
 }
 
-fn view(app: &App) -> Element<'_, Message> {
-    let top_bar = top_bar(app);
-
-    let main_element = match &app.state {
-        State::SelectingLobby { info, .. } => {
-            let nickname = &app.nickname;
-            let lobby_name = &app.lobby_name;
-            let signaling_server_url = &app.signaling_server_url;
-            view_selecting_lobby(
-                app.localization,
-                *info,
-                nickname,
-                lobby_name,
-                signaling_server_url,
-            )
-        }
-        State::WaitingForSocket | State::WaitingForPeer { .. } | State::Handshaking { .. } => {
-            view_connecting(app.localization)
-        }
-        State::Game(g) => view_game(app.localization, &app.nickname, g),
-        State::GameOver {
-            info,
-            is_playing_first,
-            game,
-            last_placement,
-            ..
-        } => view_game_over(
-            app.localization,
-            *info,
-            *is_playing_first,
-            game,
-            *last_placement,
-        ),
-    };
-
-    col![top_bar, main_element,].into()
-}
-
-fn top_bar(app: &App) -> Element<'_, Message> {
-    let theme_menu = theme_menu(app);
-    let language_menu = language_menu(app);
-
-    row![theme_menu, language_menu].into()
-}
-
-fn theme_menu(app: &App) -> Element<'_, Message> {
-    let underlay = Row::new()
-        .push(button(text(format!("{}", app.theme))).on_press(Message::ThemeExpand))
-        .spacing(8)
-        .align_y(Alignment::Center);
-    let options = Column::with_children(Theme::ALL.iter().map(|theme| {
-        Row::new()
-            .push(button(text(theme.to_string())).on_press(Message::SelectedTheme(theme.clone())))
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .into()
-    }));
-    let overlay = scrollable(container(options.padding([0, 4])).style(container::bordered_box));
-
-    let theme_drop_down = DropDown::new(underlay, overlay, app.theme_expanded);
-    theme_drop_down.into()
-}
-
-fn language_menu(app: &App) -> Element<'_, Message> {
-    let underlay = Row::new()
-        .push(button(text(format!("{}", app.localization))).on_press(Message::LocalizationExpand))
-        .spacing(8)
-        .align_y(Alignment::Center);
-    let options = Column::with_children(Localization::ALL.iter().map(|localization| {
-        Row::new()
-            .push(
-                button(text(localization.to_string()))
-                    .on_press(Message::SelectedLocalization(*localization)),
-            )
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .into()
-    }));
-    let overlay = scrollable(container(options.padding([0, 4])).style(container::bordered_box));
-
-    let localization_drop_down = DropDown::new(underlay, overlay, app.localization_expanded);
-    localization_drop_down.into()
-}
-
-fn view_selecting_lobby<'a>(
-    loc: Localization,
-    info: LobbyInfo,
-    nickname: &'a str,
-    lobby_name: &'a str,
-    signaling_server_url: &'a str,
-) -> Element<'a, Message> {
-    container(
-        col![
-            // Info.
-            text(info.to_str(loc)),
-            // Nickname.
-            row![
-                space().width(Length::Fill),
-                text(loc.nickname())
-                    .width(Length::Fixed(90.0))
-                    .align_x(Alignment::End),
-                text_input(loc.nickname_placeholder(), nickname)
-                    .on_input(Message::InputNickname)
-                    .width(Length::Fill),
-                space().width(Length::Fill),
-            ]
-            .align_y(Alignment::Center),
-            // Lobby name.
-            row![
-                space().width(Length::Fill),
-                text(loc.lobby())
-                    .width(Length::Fixed(90.0))
-                    .align_x(Alignment::End),
-                text_input(loc.lobby_placeholder(), lobby_name)
-                    .on_input(Message::InputLobbyName)
-                    .width(Length::Fill),
-                space().width(Length::Fill),
-            ]
-            .align_y(Alignment::Center),
-            // TODO: add text to signal wrong lobby name.
-            // Signaling server url.
-            // TODO: toggle hide/reveal the text_input.
-            row![
-                space().width(Length::Fill),
-                text(loc.signaling_server_url())
-                    .width(Length::Fixed(90.0))
-                    .align_x(Alignment::End),
-                text_input(loc.signaling_server_url_placeholder(), signaling_server_url)
-                    .on_input(Message::InputSignalingServer)
-                    .width(Length::Fill),
-                space().width(Length::Fill),
-            ]
-            .align_y(Alignment::Center),
-            // Join button.
-            button(loc.join())
-                .on_press_maybe(can_join_lobby(nickname, lobby_name).then_some(Message::JoinLobby))
-        ]
-        .spacing(10)
-        .align_x(Alignment::Center),
-    )
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .into()
-}
-
-fn can_join_lobby(nickname: &str, lobby_name: &str) -> bool {
-    let is_all_alphanumeric = lobby_name.chars().all(char::is_alphanumeric);
-    !nickname.is_empty() && !lobby_name.is_empty() && is_all_alphanumeric
-}
-
-fn view_connecting(localization: Localization) -> Element<'static, Message> {
-    container(
-        col![
-            text(localization.waiting_connection()).size(40),
-            button(localization.cancel()).on_press(Message::CancelConnection),
-        ]
-        .align_x(Alignment::Center),
-    )
-    .center(Length::Fill)
-    .center_y(Length::Fill)
-    .into()
-}
-
-fn view_game<'a>(loc: Localization, nickname: &'a str, g: &'a GameState) -> Element<'a, Message> {
-    container(
-        col![
-            player_turn(nickname, g),
-            show_grid(
-                &g.game,
-                GridInteraction::Interactive,
-                &option_to_vec(g.last_placement)
-            ),
-            number_selection(g),
-            button(loc.forfeit()).on_press(Message::Forfeit),
-        ]
-        .align_x(Alignment::Center)
-        .spacing(10),
-    )
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .into()
-}
-
-fn view_game_over(
-    loc: Localization,
-    info: GameOverInfo,
-    is_player_first: bool,
-    g: &Game,
-    last_placement: Option<Position>,
-) -> Element<'_, Message> {
-    let mut end_text = String::new();
-    let mut highlight_positions = Vec::new();
-    match info {
-        GameOverInfo::Finished => match g.result() {
-            Some(GameResult::Draw) => {
-                end_text.push_str(loc.draw());
-            }
-            Some(GameResult::Loss {
-                loser,
-                reason: LossReason::RuleViolation(RuleViolation { conflicting, .. }),
-            }) => {
-                if is_player_turn(is_player_first, loser) {
-                    end_text.push_str(loc.player_lost());
-                } else {
-                    end_text.push_str(loc.player_win());
-                }
-                highlight_positions.push(conflicting);
-                if let Some(position) = last_placement {
-                    highlight_positions.push(position);
+fn ticks() -> Subscription<Message> {
+    Subscription::run(|| {
+        stream::channel(1, |mut out: mpsc::Sender<Message>| async move {
+            loop {
+                Delay::new(Duration::from_millis(200)).await;
+                if out.send(Message::Tick(Instant::now())).await.is_err() {
+                    break;
                 }
             }
-            Some(GameResult::Loss {
-                loser,
-                reason: LossReason::NoValidPositions,
-            }) => {
-                if is_player_turn(is_player_first, loser) {
-                    end_text.push_str(loc.player_lost());
-                } else {
-                    end_text.push_str(loc.player_win());
-                }
-            }
-            None => {
-                end_text.push_str(loc.game_finished());
-            }
-        },
-        _ => {
-            end_text.push_str(info.to_str(loc));
-        }
-    };
-    container(
-        col![
-            text(end_text),
-            show_grid(g, GridInteraction::None, &highlight_positions),
-            // TODO: button to save history.
-            button(loc.return_to_lobby()).on_press(Message::ReturnToLobby),
-        ]
-        .align_x(Alignment::Center)
-        .spacing(10),
-    )
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .into()
-}
-
-fn option_to_vec<T>(opt: Option<T>) -> Vec<T> {
-    let mut result = Vec::new();
-    if let Some(opt) = opt {
-        result.push(opt);
-    }
-    result
-}
-
-fn player_turn<'a>(nickname: &'a str, g: &GameState) -> Element<'a, Message> {
-    text(format!(
-        "{}'s turn",
-        player_to_name(
-            nickname,
-            &g.opponent_nickname,
-            g.is_playing_first,
-            g.game.active_player()
-        )
-    ))
-    .into()
-}
-
-fn player_to_name<'a>(
-    nickname: &'a str,
-    opponent_nickname: &'a str,
-    is_playing_first: bool,
-    player: Player,
-) -> &'a str {
-    if is_player_turn(is_playing_first, player) {
-        nickname
-    } else {
-        opponent_nickname
-    }
+        })
+    })
 }
 
 fn is_player_turn(is_playing_first: bool, player: Player) -> bool {
@@ -1042,130 +563,6 @@ fn is_player_turn(is_playing_first: bool, player: Player) -> bool {
 
 fn is_opponent_turn(is_playing_first: bool, player: Player) -> bool {
     !is_player_turn(is_playing_first, player)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum GridInteraction {
-    Interactive,
-    None,
-}
-
-fn show_grid<'g>(
-    g: &'g Game,
-    grid_interaction: GridInteraction,
-    highlight_position: &[Position],
-) -> Element<'g, Message> {
-    let grid = g.grid();
-
-    Column::with_children([File::A, File::D, File::G].map(|file| {
-        Row::with_children(
-            [Rank::One, Rank::Four, Rank::Seven]
-                .map(|rank| show_square(grid, rank, file, grid_interaction, highlight_position)),
-        )
-        .spacing(SQUARE_SPACING)
-        .into()
-    }))
-    .spacing(SQUARE_SPACING)
-    .into()
-}
-
-fn show_square<'g>(
-    grid: &'g Grid,
-    rank: Rank,
-    file: File,
-    grid_interaction: GridInteraction,
-    highlight_position: &[Position],
-) -> Element<'g, Message> {
-    let ranks = rank.band();
-    let files = file.stack();
-    Column::with_children(files.iter().map(|&d_file| {
-        Row::with_children(ranks.iter().map(|&d_rank| {
-            let position = Position::new(d_rank, d_file);
-
-            if let Some(number) = grid.get(position) {
-                let t = text(number.to_string())
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .size(30.0)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center);
-
-                if highlight_position.contains(&position) {
-                    container(t)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(LAST_POSITION_COLOR.into()),
-                            ..container::Style::default()
-                        })
-                        .into()
-                } else {
-                    t.into()
-                }
-            } else {
-                let mut button = button("")
-                    .width(Length::Fixed(CELL_SIZE))
-                    .height(Length::Fixed(CELL_SIZE))
-                    .style(style_button);
-
-                if let GridInteraction::Interactive = grid_interaction {
-                    button = button.on_press(Message::SudokuButtonClicked(position));
-                }
-
-                button.into()
-            }
-        }))
-        .spacing(CELL_SPACING)
-        .into()
-    }))
-    .spacing(CELL_SPACING)
-    .into()
-}
-
-fn style_button(theme: &Theme, status: button::Status) -> Style {
-    let mut style = button::primary(theme, status);
-
-    match status {
-        button::Status::Hovered => {
-            style.background = Some(Color::from_rgb(0.2, 0.6, 0.9).into());
-        }
-        button::Status::Pressed => {
-            style.background = Some(Color::from_rgb(0.1, 0.4, 0.7).into());
-        }
-        _ => {
-            // Default state color
-            style.background = Some(Color::from_rgb(0.1, 0.5, 0.8).into());
-        }
-    }
-    style.text_color = Color::WHITE;
-
-    style.border.radius = 0.0.into();
-
-    style
-}
-
-fn number_selection(g: &GameState) -> Element<'_, Message> {
-    // TODO: use Number::All in a for loop.
-    let one = number_to_radio(g.selected_number, Number::One);
-    let two = number_to_radio(g.selected_number, Number::Two);
-    let three = number_to_radio(g.selected_number, Number::Three);
-    let four = number_to_radio(g.selected_number, Number::Four);
-    let five = number_to_radio(g.selected_number, Number::Five);
-    let six = number_to_radio(g.selected_number, Number::Six);
-    let seven = number_to_radio(g.selected_number, Number::Seven);
-    let eight = number_to_radio(g.selected_number, Number::Eight);
-    let nine = number_to_radio(g.selected_number, Number::Nine);
-    row![one, two, three, four, five, six, seven, eight, nine]
-        .spacing(10)
-        .into()
-}
-
-fn number_to_radio(selected_number: Option<Number>, number: Number) -> Element<'static, Message> {
-    col![
-        text(format!("{number}  ")),
-        radio("", number, selected_number, Message::RadioNumberSelected,),
-    ]
-    .align_x(Alignment::Center)
-    .spacing(5)
-    .into()
 }
 
 fn init_logger() {
