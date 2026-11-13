@@ -3,7 +3,7 @@ use std::time::{
     Instant, //
 };
 
-const TIME_BUDGET: Duration = Duration::from_secs(10);
+const TIME_BUDGET: Duration = Duration::from_mins(5);
 pub const TIMEOUT_GRACE: Duration = Duration::from_secs(3);
 
 pub struct Clock {
