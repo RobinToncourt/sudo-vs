@@ -216,7 +216,7 @@ impl Localization {
     fn peer_disconnected_during_connection(self) -> &'static str {
         match self {
             Self::En => "The peer disconnected during connection.",
-            Self::Fr => "Le pair s'est deconnecté pendant la connexion.",
+            Self::Fr => "Le pair s'est déconnecté pendant la connexion.",
         }
     }
     #[allow(clippy::unused_self)]
@@ -305,7 +305,7 @@ impl Localization {
     fn opponent_disconnected(self) -> &'static str {
         match self {
             Self::En => "Your opponent disconnected.",
-            Self::Fr => "Votre adversaire s'est deconnecté.",
+            Self::Fr => "Votre adversaire s'est déconnecté.",
         }
     }
     fn connection_closed(self) -> &'static str {
