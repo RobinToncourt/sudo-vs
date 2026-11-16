@@ -1,0 +1,4 @@
+disallowed-types = [
+    { path = "std::time::Instant", reason = "panics on wasm32; use web_time::Instant" },
+    { path = "std::time::SystemTime", reason = "panics on wasm32; use web_time::SystemTime" },
+]

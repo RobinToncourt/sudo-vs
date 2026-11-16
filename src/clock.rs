@@ -1,9 +1,10 @@
 use std::time::{
-    Duration,
-    Instant, //
+    Duration, //
 };
 
-const TIME_BUDGET: Duration = Duration::from_mins(5);
+use web_time::Instant;
+
+const TIME_BUDGET: Duration = Duration::from_secs(5 * 60);
 pub const TIMEOUT_GRACE: Duration = Duration::from_secs(3);
 
 pub struct Clock {

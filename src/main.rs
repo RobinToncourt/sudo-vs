@@ -11,8 +11,7 @@ use std::{
         Display, //
     },
     time::{
-        Duration,
-        Instant, //
+        Duration, //
     },
 };
 
@@ -31,6 +30,8 @@ use iced::{
 };
 
 use futures_timer::Delay;
+
+use web_time::Instant;
 
 use log::debug;
 

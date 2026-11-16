@@ -1,12 +1,13 @@
 use std::time::{
-    Duration,
-    Instant, //
+    Duration, //
 };
 
 use iced::{
     Task,
     futures::channel::mpsc, //
 };
+
+use web_time::Instant;
 
 use log::debug;
 

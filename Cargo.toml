@@ -11,6 +11,9 @@ iced_aw = { version = "0.14", features = ["full"] }
 # Extensions for futures.
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
 
+# Time for WEB, works for native.
+web-time = "1"
+
 # WebRtcSocket.
 matchbox_socket = "0.14"
 
@@ -26,4 +29,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Log error for WASM build on WEB browser.
 console_error_panic_hook = "0.1"
 console_log = "1"
-web-time = "1"
