@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use iced::widget::mouse_area;
 use iced::{
     Alignment,
     Color,
@@ -25,8 +24,17 @@ use iced::{
 use iced_aw::DropDown;
 
 use crate::{
-    App, CELL_SIZE, CELL_SPACING, GameOverInfo, GameState, LAST_POSITION_COLOR, LobbyField,
-    LobbyInfo, Localization, Message, SQUARE_SPACING, State,
+    App,
+    CELL_SIZE,
+    CELL_SPACING,
+    GameOverInfo,
+    GameState,
+    LAST_POSITION_COLOR,
+    LobbyInfo,
+    Localization,
+    Message,
+    SQUARE_SPACING,
+    State,
     game::{
         File,
         Game,
@@ -39,7 +47,7 @@ use crate::{
         Rank,
         RuleViolation, //
     },
-    is_player_turn, platform,
+    is_player_turn, //
 };
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -143,12 +151,9 @@ fn view_selecting_lobby<'a>(
                 text(loc.nickname())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                lobby_field(
-                    loc.nickname_placeholder(),
-                    nickname,
-                    LobbyField::Nickname,
-                    Message::InputNickname,
-                ),
+                text_input(loc.nickname_placeholder(), nickname)
+                    .on_input(Message::InputNickname)
+                    .width(Length::Fill),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -158,12 +163,9 @@ fn view_selecting_lobby<'a>(
                 text(loc.lobby())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                lobby_field(
-                    loc.lobby_placeholder(),
-                    lobby_name,
-                    LobbyField::LobbyName,
-                    Message::InputLobbyName,
-                ),
+                text_input(loc.lobby_placeholder(), lobby_name)
+                    .on_input(Message::InputLobbyName)
+                    .width(Length::Fill),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -175,12 +177,9 @@ fn view_selecting_lobby<'a>(
                 text(loc.signaling_server_url())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                lobby_field(
-                    loc.signaling_server_url_placeholder(),
-                    signaling_server_url,
-                    LobbyField::SignalingServer,
-                    Message::InputSignalingServer,
-                ),
+                text_input(loc.signaling_server_url_placeholder(), signaling_server_url)
+                    .on_input(Message::InputSignalingServer)
+                    .width(Length::Fill),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -194,22 +193,6 @@ fn view_selecting_lobby<'a>(
     .center_x(Length::Fill)
     .center_y(Length::Fill)
     .into()
-}
-
-fn lobby_field<'a>(
-    placeholder: &'a str,
-    value: &'a str,
-    field: LobbyField,
-    on_input: fn(String) -> Message,
-) -> Element<'a, Message> {
-    let input = text_input(placeholder, value)
-        .on_input(on_input)
-        .width(Length::Fill);
-    if platform::is_touch_device() {
-        mouse_area(input).on_press(Message::EditField(field)).into()
-    } else {
-        input.into()
-    }
 }
 
 fn can_join_lobby(nickname: &str, lobby_name: &str) -> bool {

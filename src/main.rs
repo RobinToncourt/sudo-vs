@@ -2,7 +2,6 @@
 
 mod clock;
 mod game;
-mod platform;
 mod update;
 mod view;
 
@@ -65,13 +64,6 @@ const CELL_SIZE: f32 = 40.0;
 const CELL_SPACING: f32 = 2.0;
 const SQUARE_SPACING: f32 = 10.0;
 const LAST_POSITION_COLOR: Color = Color::from_rgb(0.984_313, 0.749_019, 0.141_176);
-
-#[derive(Debug, Clone, Copy)]
-enum LobbyField {
-    Nickname,
-    LobbyName,
-    SignalingServer,
-}
 
 #[derive(Debug, Clone, Copy)]
 enum LobbyInfo {
@@ -385,8 +377,6 @@ enum Message {
     InputLobbyName(String),
     /// Input the signaling server URL.
     InputSignalingServer(String),
-    /// Edit a lobby field through a native dialog (touch devices).
-    EditField(LobbyField),
     JoinLobby,
     CancelConnection,
     /// Selecting a radio button.
@@ -413,7 +403,6 @@ impl Display for Message {
                 Self::InputNickname(_) => "InputNickname",
                 Self::InputLobbyName(_) => "InputLobbyName",
                 Self::InputSignalingServer(_) => "InputSignalingServer",
-                Self::EditField(_) => "EditField",
                 Self::JoinLobby => "JoinLobby",
                 Self::CancelConnection => "CancelConnection",
                 Self::RadioNumberSelected(_) => "RadioNumberSelected",
