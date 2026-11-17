@@ -2,11 +2,11 @@ use std::time::{
     Duration, //
 };
 
+use iced::widget::canvas::path::lyon_path::geom::utils::directed_angle;
 use iced::{
     Task,
     futures::channel::mpsc, //
 };
-
 use web_time::Instant;
 
 use log::debug;
@@ -15,25 +15,16 @@ use matchbox_socket::PeerId;
 
 use crate::clock::Clock;
 use crate::{
-    App,
-    Command,
-    GameOverInfo,
-    GameState,
-    LobbyInfo,
-    Message,
-    PROTOCOL_VERSION,
-    PlayerAction,
-    State,
-    WebSocketEvent,
-    clock::TIMEOUT_GRACE, //
+    App, Command, GameOverInfo, GameState, LobbyField, LobbyInfo, Message, PROTOCOL_VERSION,
+    PlayerAction, State, WebSocketEvent,
+    clock::TIMEOUT_GRACE,
     game::{
         Game,
         Outcome,
         Placement,
         Position, //
     },
-    is_opponent_turn,
-    is_player_turn,
+    is_opponent_turn, is_player_turn, platform,
 };
 
 struct Step {
@@ -144,6 +135,19 @@ fn update_selecting_lobby(app: &mut App, message: Message) -> Step {
         Message::InputNickname(v) => app.nickname = v,
         Message::InputLobbyName(v) => app.lobby_name = v,
         Message::InputSignalingServer(v) => app.signaling_server_url = v,
+        Message::EditField(field) => {
+            let loc = app.localization;
+            let (label, value) = match field {
+                LobbyField::Nickname => (loc.nickname(), &mut app.nickname),
+                LobbyField::Lobby => (loc.lobby(), &mut app.lobby_name),
+                LobbyField::SignalingServer => {
+                    (loc.signaling_server_url(), &mut app.signaling_server_url)
+                }
+            };
+            if let Some(new) = platform::prompt(label, value) {
+                *value = new;
+            }
+        }
         Message::JoinLobby => return Step::go(State::WaitingForSocket),
         other => return ignored(&other, "SelectingLobby"),
     }

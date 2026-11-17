@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use iced::widget::mouse_area;
 use iced::{
     Alignment,
     Color,
@@ -30,11 +31,12 @@ use crate::{
     GameOverInfo,
     GameState,
     LAST_POSITION_COLOR,
+    LobbyField,
     LobbyInfo,
     Localization,
     Message,
     SQUARE_SPACING,
-    State,
+    State, //
     game::{
         File,
         Game,
@@ -47,7 +49,8 @@ use crate::{
         Rank,
         RuleViolation, //
     },
-    is_player_turn, //
+    is_player_turn,
+    platform,
 };
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -59,6 +62,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             let lobby_name = &app.lobby_name;
             let signaling_server_url = &app.signaling_server_url;
             view_selecting_lobby(
+                app.is_touch_device,
                 app.localization,
                 *info,
                 nickname,
@@ -135,6 +139,7 @@ fn language_menu(app: &App) -> Element<'_, Message> {
 }
 
 fn view_selecting_lobby<'a>(
+    is_touch_device: bool,
     loc: Localization,
     info: LobbyInfo,
     nickname: &'a str,
@@ -151,9 +156,13 @@ fn view_selecting_lobby<'a>(
                 text(loc.nickname())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input(loc.nickname_placeholder(), nickname)
-                    .on_input(Message::InputNickname)
-                    .width(Length::Fill),
+                lobby_field(
+                    is_touch_device,
+                    loc.nickname_placeholder(),
+                    nickname,
+                    LobbyField::Nickname,
+                    Message::InputNickname
+                ),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -163,9 +172,13 @@ fn view_selecting_lobby<'a>(
                 text(loc.lobby())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input(loc.lobby_placeholder(), lobby_name)
-                    .on_input(Message::InputLobbyName)
-                    .width(Length::Fill),
+                lobby_field(
+                    is_touch_device,
+                    loc.lobby_placeholder(),
+                    lobby_name,
+                    LobbyField::Lobby,
+                    Message::InputLobbyName
+                ),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -177,9 +190,13 @@ fn view_selecting_lobby<'a>(
                 text(loc.signaling_server_url())
                     .width(Length::Fixed(90.0))
                     .align_x(Alignment::End),
-                text_input(loc.signaling_server_url_placeholder(), signaling_server_url)
-                    .on_input(Message::InputSignalingServer)
-                    .width(Length::Fill),
+                lobby_field(
+                    is_touch_device,
+                    loc.signaling_server_url_placeholder(),
+                    signaling_server_url,
+                    LobbyField::SignalingServer,
+                    Message::InputSignalingServer
+                ),
                 space().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -193,6 +210,28 @@ fn view_selecting_lobby<'a>(
     .center_x(Length::Fill)
     .center_y(Length::Fill)
     .into()
+}
+
+fn lobby_field<'a>(
+    is_touch_device: bool,
+    placeholder: &'a str,
+    value: &'a str,
+    field: LobbyField,
+    on_input: fn(String) -> Message,
+) -> Element<'a, Message> {
+    if is_touch_device {
+        let label = if value.is_empty() { placeholder } else { value };
+        button(text(label))
+            .on_press(Message::EditField(field))
+            .width(Length::Fill)
+            .style(button::secondary)
+            .into()
+    } else {
+        text_input(placeholder, value)
+            .on_input(on_input)
+            .width(Length::Fill)
+            .into()
+    }
 }
 
 fn can_join_lobby(nickname: &str, lobby_name: &str) -> bool {
